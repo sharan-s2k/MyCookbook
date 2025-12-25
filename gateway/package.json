@@ -1,0 +1,28 @@
+{
+  "name": "gateway-service",
+  "version": "1.0.0",
+  "description": "API Gateway for MyCookbook",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "jest"
+  },
+  "dependencies": {
+    "fastify": "^4.24.3",
+    "@fastify/http-proxy": "^9.1.0",
+    "@fastify/cors": "^8.4.0",
+    "@fastify/cookie": "^9.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "http-proxy-middleware": "^2.0.6",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/jsonwebtoken": "^9.0.5",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  }
+}
+

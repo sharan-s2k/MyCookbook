@@ -29,8 +29,50 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
   const [aiMessages, setAiMessages] = useState<Array<{ type: 'user' | 'assistant'; text: string }>>([
     { type: 'assistant', text: 'Ready to cook! I can help you navigate steps, answer questions, and set timers.' }
   ]);
+  const [youtubePlayer, setYoutubePlayer] = useState<any>(null);
 
   const currentStep = recipe.steps[currentStepIndex];
+
+  // Extract video ID from YouTube URL
+  const getVideoId = (url?: string): string | null => {
+    if (!url) return null;
+    const match = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\n?#]+)/);
+    return match ? match[1] : null;
+  };
+
+  const videoId = getVideoId(recipe.youtubeUrl || recipe.source_ref);
+
+  // Load YouTube IFrame API
+  useEffect(() => {
+    if (!videoId) return;
+
+    const tag = document.createElement('script');
+    tag.src = 'https://www.youtube.com/iframe_api';
+    const firstScriptTag = document.getElementsByTagName('script')[0];
+    firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
+
+    (window as any).onYouTubeIframeAPIReady = () => {
+      const player = new (window as any).YT.Player('youtube-player', {
+        videoId: videoId,
+        playerVars: {
+          autoplay: 0,
+          controls: 1,
+          rel: 0,
+        },
+        events: {
+          onReady: () => {
+            setYoutubePlayer(player);
+          },
+        },
+      });
+    };
+
+    return () => {
+      if ((window as any).onYouTubeIframeAPIReady) {
+        delete (window as any).onYouTubeIframeAPIReady;
+      }
+    };
+  }, [videoId]);
 
   const handlePreviousStep = () => {
     if (currentStepIndex > 0) {
@@ -46,6 +88,15 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
 
   const handleJumpToStep = (index: number) => {
     setCurrentStepIndex(index);
+    const step = recipe.steps[index];
+    if (step.timestamp && youtubePlayer) {
+      // Parse timestamp (format: "M:SS" or "MM:SS")
+      const parts = step.timestamp.split(':');
+      const seconds = parseInt(parts[0]) * 60 + parseInt(parts[1] || '0');
+      if (seconds > 0) {
+        youtubePlayer.seekTo(seconds, true);
+      }
+    }
   };
 
   const toggleIngredient = (index: number) => {
@@ -205,31 +256,20 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
         <div className="flex flex-col gap-4 overflow-hidden">
           {/* Video player */}
           <div className="bg-black rounded-xl overflow-hidden aspect-video flex-shrink-0">
-            <div className="relative w-full h-full flex items-center justify-center">
-              <img
-                src={recipe.thumbnail}
-                alt={recipe.title}
-                className="w-full h-full object-cover"
-              />
-              
-              {/* Video controls */}
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-4">
-                <div className="flex items-center justify-center gap-4">
-                  <button className="p-3 hover:bg-white/20 rounded-full transition-colors text-white">
-                    <SkipBack className="w-6 h-6" />
-                  </button>
-                  <button
-                    onClick={() => setIsPlaying(!isPlaying)}
-                    className="p-4 bg-orange-500 hover:bg-orange-600 rounded-full transition-colors text-white"
-                  >
-                    {isPlaying ? <Pause className="w-8 h-8" /> : <Play className="w-8 h-8 ml-1" />}
-                  </button>
-                  <button className="p-3 hover:bg-white/20 rounded-full transition-colors text-white">
-                    <SkipForward className="w-6 h-6" />
-                  </button>
+            {videoId ? (
+              <div id="youtube-player" className="w-full h-full"></div>
+            ) : (
+              <div className="relative w-full h-full flex items-center justify-center">
+                <img
+                  src={recipe.thumbnail}
+                  alt={recipe.title}
+                  className="w-full h-full object-cover"
+                />
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <p className="text-white">No video available</p>
                 </div>
               </div>
-            </div>
+            )}
           </div>
 
           {/* AI conversation */}

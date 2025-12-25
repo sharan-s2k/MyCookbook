@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  ai-orchestrator:
+    build: .
+    ports:
+      - "8004:8004"
+    environment:
+      PORT: 8004
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      REQUEST_TIMEOUT_SEC: ${REQUEST_TIMEOUT_SEC:-60}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+    volumes:
+      - .:/app
+

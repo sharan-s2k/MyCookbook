@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  auth-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: auth_db
+      POSTGRES_USER: auth_user
+      POSTGRES_PASSWORD: auth_pass
+    ports:
+      - "5433:5432"
+    volumes:
+      - auth-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth_user -d auth_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  auth:
+    build: .
+    depends_on:
+      auth-db:
+        condition: service_healthy
+    ports:
+      - "8001:8001"
+    environment:
+      PORT: 8001
+      DATABASE_URL: postgres://auth_user:auth_pass@auth-db:5432/auth_db
+      JWT_SECRET: ${JWT_SECRET:-dev-secret}
+      ACCESS_TOKEN_TTL_MIN: 15
+      REFRESH_TOKEN_TTL_DAYS: 30
+      USER_SERVICE_INTERNAL_URL: ${USER_SERVICE_INTERNAL_URL:-http://host.docker.internal:8002}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+      BCRYPT_COST: 12
+    volumes:
+      - .:/app
+      - /app/node_modules
+
+volumes:
+  auth-db-data:
+

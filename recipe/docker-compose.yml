@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  recipe-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: recipe_db
+      POSTGRES_USER: recipe_user
+      POSTGRES_PASSWORD: recipe_pass
+    ports:
+      - "5435:5432"
+    volumes:
+      - recipe-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recipe_user -d recipe_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  recipe:
+    build: .
+    depends_on:
+      recipe-db:
+        condition: service_healthy
+    ports:
+      - "8003:8003"
+    environment:
+      PORT: 8003
+      DATABASE_URL: postgres://recipe_user:recipe_pass@recipe-db:5432/recipe_db
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:29092}
+      KAFKA_TOPIC_JOBS: recipe.jobs
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+    volumes:
+      - .:/app
+      - /app/node_modules
+
+volumes:
+  recipe-db-data:
+

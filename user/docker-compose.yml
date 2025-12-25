@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  user-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: user_db
+      POSTGRES_USER: user_user
+      POSTGRES_PASSWORD: user_pass
+    ports:
+      - "5434:5432"
+    volumes:
+      - user-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user_user -d user_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  user:
+    build: .
+    depends_on:
+      user-db:
+        condition: service_healthy
+    ports:
+      - "8002:8002"
+    environment:
+      PORT: 8002
+      DATABASE_URL: postgres://user_user:user_pass@user-db:5432/user_db
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+    volumes:
+      - .:/app
+      - /app/node_modules
+
+volumes:
+  user-db-data:
+

@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  gateway:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: 8080
+      AUTH_URL: ${AUTH_URL:-http://host.docker.internal:8001}
+      USER_URL: ${USER_URL:-http://host.docker.internal:8002}
+      RECIPE_URL: ${RECIPE_URL:-http://host.docker.internal:8003}
+      JWT_PUBLIC_OR_SHARED_SECRET: ${JWT_SECRET:-dev-secret}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+    volumes:
+      - .:/app
+      - /app/node_modules
+

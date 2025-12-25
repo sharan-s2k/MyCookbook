@@ -1,4 +1,4 @@
-import React, { useState, createContext, useContext } from 'react';
+import React, { useState, createContext, useContext, useEffect, useRef } from 'react';
 import { Routes, Route, useNavigate, useParams, useLocation, Navigate } from 'react-router-dom';
 import { AuthScreen } from './components/features/AuthScreen';
 import { Sidebar } from './components/features/Sidebar';
@@ -11,6 +11,7 @@ import { Profile } from './components/features/Profile';
 import { RecipeDetail } from './components/features/RecipeDetail';
 import { CookMode } from './components/features/CookMode';
 import { CreateModal } from './components/modals/CreateModal';
+import { authAPI, recipeAPI, userAPI, setAccessToken, getAccessToken } from './api/client';
 import type { Recipe, Cookbook, User, FeedPost } from './types';
 
 type AppContextType = {
@@ -63,7 +64,8 @@ function AuthenticatedLayout({ children }: { children: React.ReactNode }) {
     else if (screen === 'profile') navigate('/profile');
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await authAPI.logout();
     setIsAuthenticated(false);
     navigate('/login');
   };
@@ -75,7 +77,7 @@ function AuthenticatedLayout({ children }: { children: React.ReactNode }) {
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
         currentScreen={getCurrentScreen()}
         onNavigate={handleNavigate}
-        currentUser={currentUser}
+        currentUser={currentUser!}
         onLogout={handleLogout}
       />
       
@@ -88,7 +90,7 @@ function AuthenticatedLayout({ children }: { children: React.ReactNode }) {
               onToggleCollapse={() => {}}
               currentScreen={getCurrentScreen()}
               onNavigate={handleNavigate}
-              currentUser={currentUser}
+              currentUser={currentUser!}
               onLogout={handleLogout}
             />
           </div>
@@ -99,7 +101,7 @@ function AuthenticatedLayout({ children }: { children: React.ReactNode }) {
         <Header
           currentScreen={getCurrentScreen()}
           onOpenCreate={() => setShowCreateModal(true)}
-          currentUser={currentUser}
+          currentUser={currentUser!}
           onNavigate={handleNavigate}
           onMenuClick={() => setMobileMenuOpen(!mobileMenuOpen)}
         />
@@ -379,9 +381,59 @@ function ProfileRoute() {
 function RecipeDetailRoute() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { recipes, cookbooks, setRecipes, setCookbooks } = useAppContext();
+  const { cookbooks } = useAppContext();
+  const [recipe, setRecipe] = useState<Recipe | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  const recipe = recipes.find(r => r.id === id);
+  useEffect(() => {
+    const fetchRecipe = async () => {
+      try {
+        const data = await recipeAPI.getRecipe(id!);
+        // Transform backend format to frontend format
+        const transformed: Recipe = {
+          id: data.id,
+          title: data.title,
+          description: data.description || '',
+          isPublic: data.is_public,
+          source_type: data.source_type,
+          source_ref: data.source_ref,
+          youtubeUrl: data.source_type === 'youtube' ? data.source_ref : undefined,
+          ingredients: Array.isArray(data.ingredients)
+            ? data.ingredients.map((ing: string) => {
+                const parts = ing.split(/\s+(.+)/);
+                return {
+                  name: parts[1] || ing,
+                  amount: parts[0] || '',
+                };
+              })
+            : [],
+          steps: data.steps.map((step: any) => ({
+            text: step.text,
+            timestamp: step.timestamp_sec > 0 ? formatTimestamp(step.timestamp_sec) : undefined,
+            timestamp_sec: step.timestamp_sec,
+            index: step.index,
+          })),
+          createdAt: data.created_at,
+        };
+        setRecipe(transformed);
+      } catch (error) {
+        console.error('Failed to fetch recipe:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    if (id) {
+      fetchRecipe();
+    }
+  }, [id]);
+
+  const formatTimestamp = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  if (loading) return <div className="p-8">Loading...</div>;
   if (!recipe) return <div className="p-8">Recipe not found</div>;
 
   const handleStartCookMode = () => {
@@ -456,16 +508,12 @@ function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [currentUser] = useState<User>({
-    id: 'user1',
-    name: 'Alex Chen',
-    avatar: 'https://images.unsplash.com/photo-1759521296144-fe6f2d2dc769?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxjaGVmJTIwcG9ydHJhaXQlMjBwcm9mZXNzaW9uYWx8ZW58MXx8fHwxNzY1OTgzMDE1fDA&ixlib=rb-4.1.0&q=80&w=1080&utm_source=figma&utm_medium=referral',
-    bio: 'Home cook & recipe enthusiast',
-    followers: 243,
-    following: 89,
-    publicRecipes: 12,
-  });
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(false); // Start with false - show auth screen immediately
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const isLoggingInRef = useRef(false);
 
+  // All state hooks must be declared before any conditional returns
   const [recipes, setRecipes] = useState<Recipe[]>([
     {
       id: 'r1',
@@ -609,9 +657,130 @@ function App() {
     },
   ]);
 
-  const handleLogin = () => {
-    setIsAuthenticated(true);
+  // Optional: Try to restore session on mount (non-blocking)
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const token = getAccessToken();
+        if (!token) {
+          // Try refresh if no token in memory
+          await authAPI.refresh();
+        }
+        const user = await userAPI.getMe();
+        setCurrentUser({
+          id: user.id,
+          name: user.display_name || user.email?.split('@')[0] || 'User',
+          avatar: user.avatar_url || '',
+          bio: user.bio || '',
+          followers: 0,
+          following: 0,
+          publicRecipes: 0,
+        });
+        setIsAuthenticated(true);
+      } catch (error) {
+        // Silently fail - user will need to login
+        setIsAuthenticated(false);
+        setCurrentUser(null);
+      }
+    };
+    // Only check if we have a potential refresh token cookie
+    // For now, skip auto-login on initial load to avoid hanging
+    // checkAuth();
+  }, []);
+
+  const handleLogin = async () => {
+    // Prevent multiple simultaneous login attempts using both state and ref
+    if (isLoggingIn || isLoggingInRef.current) {
+      console.log('handleLogin: Already processing, skipping', { isLoggingIn, ref: isLoggingInRef.current });
+      return;
+    }
+
+    setIsLoggingIn(true);
+    isLoggingInRef.current = true;
+    
+    try {
+      console.log('handleLogin: Starting...', { hasToken: !!getAccessToken() });
+      console.log('handleLogin: Fetching user profile...');
+      
+      // Retry logic: if profile not found (404), retry a few times
+      // This handles race condition where profile creation might still be in progress
+      let user;
+      let lastError: any = null;
+      const maxRetries = 3;
+      const retryDelay = 500; // 500ms between retries
+      
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          user = await userAPI.getMe();
+          break; // Success, exit retry loop
+        } catch (error: any) {
+          lastError = error;
+          // If it's a 404 and we have retries left, wait and retry
+          if (error?.message?.includes('not found') && attempt < maxRetries - 1) {
+            console.log(`handleLogin: Profile not found, retrying... (attempt ${attempt + 1}/${maxRetries})`);
+            await new Promise(resolve => setTimeout(resolve, retryDelay));
+            continue;
+          }
+          // Otherwise, throw the error
+          throw error;
+        }
+      }
+      
+      if (!user) {
+        throw lastError || new Error('Failed to fetch user profile');
+      }
+      
+      console.log('handleLogin: User profile fetched', { userId: user.id });
+      
+      // Note: user service doesn't return email, use display_name or id
+      setCurrentUser({
+        id: user.id,
+        name: user.display_name || `User ${user.id.slice(0, 8)}`,
+        avatar: user.avatar_url || '',
+        bio: user.bio || '',
+        followers: 0,
+        following: 0,
+        publicRecipes: 0,
+      });
+      setIsAuthenticated(true);
+      console.log('handleLogin: Successfully logged in');
+    } catch (error: any) {
+      console.error('handleLogin: Failed to get user after login:', error);
+      console.error('handleLogin: Error details:', {
+        message: error?.message,
+        stack: error?.stack,
+        name: error?.name,
+      });
+      // Reset auth state on error
+      setCurrentUser(null);
+      setIsAuthenticated(false);
+      // Clear access token if profile fetch fails
+      setAccessToken(null);
+      // Re-throw so AuthScreen can handle it
+      throw new Error(error?.message || 'Failed to load your profile. Please check that the backend is running and try again.');
+    } finally {
+      setIsLoggingIn(false);
+      isLoggingInRef.current = false;
+    }
   };
+
+  const handleLogout = async () => {
+    await authAPI.logout();
+    setIsAuthenticated(false);
+    setCurrentUser(null);
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-gray-600">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return <AuthScreen onLogin={handleLogin} />;
+  }
 
   const contextValue: AppContextType = {
     isAuthenticated,

@@ -1,0 +1,229 @@
+# LOCAL DEVELOPMENT ONLY - DO NOT USE IN PRODUCTION
+# This file orchestrates all services for local development
+# Each service can also run standalone with its own docker-compose.yml
+
+version: '3.8'
+
+services:
+  # Infrastructure
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Databases
+  auth-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: auth_db
+      POSTGRES_USER: auth_user
+      POSTGRES_PASSWORD: auth_pass
+    ports:
+      - "5433:5432"
+    volumes:
+      - auth-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth_user -d auth_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  user-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: user_db
+      POSTGRES_USER: user_user
+      POSTGRES_PASSWORD: user_pass
+    ports:
+      - "5434:5432"
+    volumes:
+      - user-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user_user -d user_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  recipe-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: recipe_db
+      POSTGRES_USER: recipe_user
+      POSTGRES_PASSWORD: recipe_pass
+    ports:
+      - "5435:5432"
+    volumes:
+      - recipe-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recipe_user -d recipe_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Services
+  auth:
+    build:
+      context: ./auth
+      dockerfile: Dockerfile
+    depends_on:
+      auth-db:
+        condition: service_healthy
+      user:
+        condition: service_started
+    # Internal service - no public port exposure
+    expose:
+      - "8001"
+    environment:
+      PORT: 8001
+      DATABASE_URL: postgres://auth_user:auth_pass@auth-db:5432/auth_db
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-production}
+      ACCESS_TOKEN_TTL_MIN: 15
+      REFRESH_TOKEN_TTL_DAYS: 30
+      USER_SERVICE_INTERNAL_URL: http://user:8002
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+      BCRYPT_COST: 12
+    volumes:
+      - ./auth:/app
+      - /app/node_modules
+
+  user:
+    build:
+      context: ./user
+      dockerfile: Dockerfile
+    depends_on:
+      user-db:
+        condition: service_healthy
+    # Internal service - no public port exposure
+    expose:
+      - "8002"
+    environment:
+      PORT: 8002
+      DATABASE_URL: postgres://user_user:user_pass@user-db:5432/user_db
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+      GATEWAY_TOKEN: ${GATEWAY_TOKEN:-${SERVICE_TOKEN:-dev-service-token}}
+    volumes:
+      - ./user:/app
+      - /app/node_modules
+
+  recipe:
+    build:
+      context: ./recipe
+      dockerfile: Dockerfile
+    depends_on:
+      recipe-db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    # Internal service - no public port exposure
+    expose:
+      - "8003"
+    environment:
+      PORT: 8003
+      DATABASE_URL: postgres://recipe_user:recipe_pass@recipe-db:5432/recipe_db
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_TOPIC_JOBS: recipe.jobs
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+      GATEWAY_TOKEN: ${GATEWAY_TOKEN:-${SERVICE_TOKEN:-dev-service-token}}
+    volumes:
+      - ./recipe:/app
+      - /app/node_modules
+
+  ai-orchestrator:
+    build:
+      context: ./ai-orchestrator
+      dockerfile: Dockerfile
+    # Internal service - no public port exposure
+    expose:
+      - "8004"
+    environment:
+      PORT: 8004
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      REQUEST_TIMEOUT_SEC: 60
+      FRONTEND_ORIGIN: http://localhost:3000
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+    volumes:
+      - ./ai-orchestrator:/app
+
+  workers:
+    build:
+      context: ./workers
+      dockerfile: Dockerfile
+    depends_on:
+      kafka:
+        condition: service_healthy
+      recipe:
+        condition: service_started
+      ai-orchestrator:
+        condition: service_started
+    # Internal service - no public port exposure
+    expose:
+      - "8005"
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_TOPIC_JOBS: recipe.jobs
+      RECIPE_INTERNAL_URL: http://recipe:8003
+      AI_ORCHESTRATOR_URL: http://ai-orchestrator:8004
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+    volumes:
+      - ./workers:/app
+      - /app/node_modules
+
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    depends_on:
+      auth:
+        condition: service_started
+      user:
+        condition: service_started
+      recipe:
+        condition: service_started
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: 8080
+      AUTH_URL: http://auth:8001
+      USER_URL: http://user:8002
+      RECIPE_URL: http://recipe:8003
+      JWT_PUBLIC_OR_SHARED_SECRET: ${JWT_SECRET:-dev-secret-change-in-production}
+      GATEWAY_TOKEN: ${GATEWAY_TOKEN:-${SERVICE_TOKEN:-dev-service-token}}
+      FRONTEND_ORIGIN: http://localhost:3000
+    volumes:
+      - ./gateway:/app
+      - /app/node_modules
+
+volumes:
+  auth-db-data:
+  user-db-data:
+  recipe-db-data:
+

@@ -10,12 +10,21 @@ interface CreateModalProps {
 type CreateTab = 'youtube' | 'photo';
 type CreateStep = 'input' | 'generating' | 'editing';
 
+interface YouTubePreview {
+  title: string;
+  author: string;
+  thumbnail: string;
+  duration?: string;
+}
+
 export function CreateModal({ onClose, onSave }: CreateModalProps) {
   const [activeTab, setActiveTab] = useState<CreateTab>('youtube');
   const [step, setStep] = useState<CreateStep>('input');
   const [youtubeUrl, setYoutubeUrl] = useState('');
+  const [youtubePreview, setYoutubePreview] = useState<YouTubePreview | null>(null);
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
   const [generatingProgress, setGeneratingProgress] = useState('');
+  const abortControllerRef = React.useRef<AbortController | null>(null);
   
   // Editing fields
   const [title, setTitle] = useState('');
@@ -25,62 +34,205 @@ export function CreateModal({ onClose, onSave }: CreateModalProps) {
   const [ingredients, setIngredients] = useState<Array<{ name: string; amount: string }>>([]);
   const [steps, setSteps] = useState<Array<{ text: string }>>([]);
 
-  const handleGenerate = async () => {
-    setStep('generating');
-    
-    // Simulate generation process
-    const progressSteps = [
-      'Fetching transcript...',
-      'Extracting ingredients...',
-      'Writing steps...',
-      'Finalizing recipe...'
+  // Extract video ID from YouTube URL
+  const extractVideoId = (url: string): string | null => {
+    const patterns = [
+      /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/,
+      /youtube\.com\/watch\?.*v=([^&\n?#]+)/,
     ];
-
-    for (let i = 0; i < progressSteps.length; i++) {
-      setGeneratingProgress(progressSteps[i]);
-      await new Promise(resolve => setTimeout(resolve, 800));
+    for (const pattern of patterns) {
+      const match = url.match(pattern);
+      if (match) return match[1];
     }
-
-    // Mock generated data
-    setTitle('Classic Carbonara');
-    setDescription('Authentic Italian carbonara with guanciale and pecorino romano.');
-    setDuration('25 min');
-    setCuisine('Italian');
-    setIngredients([
-      { name: 'Spaghetti', amount: '400g' },
-      { name: 'Guanciale', amount: '200g' },
-      { name: 'Egg yolks', amount: '4' },
-      { name: 'Pecorino Romano', amount: '100g' },
-      { name: 'Black pepper', amount: '2 tsp' },
-    ]);
-    setSteps([
-      { text: 'Bring a large pot of salted water to boil' },
-      { text: 'Cut guanciale into small cubes and render in a pan' },
-      { text: 'Whisk egg yolks with grated pecorino and black pepper' },
-      { text: 'Cook spaghetti until al dente' },
-      { text: 'Toss pasta with guanciale, remove from heat, add egg mixture' },
-    ]);
-
-    setStep('editing');
+    return null;
   };
 
-  const handleSave = () => {
-    const newRecipe: Recipe = {
-      id: Date.now().toString(),
-      title,
-      thumbnail: 'https://images.unsplash.com/photo-1739417083034-4e9118f487be?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxwYXN0YSUyMGRpc2glMjBpdGFsaWFufGVufDF8fHx8MTc2NjAwNjYyNnww&ixlib=rb-4.1.0&q=80&w=1080',
-      isPublic: false,
-      duration,
-      cuisine,
-      cookbookIds: [],
-      createdAt: new Date(),
-      youtubeUrl: activeTab === 'youtube' ? youtubeUrl : undefined,
-      description,
-      ingredients,
-      steps,
-      userId: 'user1',
+  // Fetch YouTube video metadata
+  const fetchYouTubeMetadata = async (url: string) => {
+    try {
+      // Use YouTube oEmbed API (no API key required)
+      const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
+      const response = await fetch(oembedUrl);
+      
+      if (!response.ok) {
+        throw new Error('Failed to fetch video metadata');
+      }
+      
+      const data = await response.json();
+      const videoId = extractVideoId(url);
+      
+      return {
+        title: data.title,
+        author: data.author_name,
+        thumbnail: data.thumbnail_url || (videoId ? `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg` : ''),
+        duration: undefined, // oEmbed doesn't provide duration
+      };
+    } catch (error) {
+      console.error('Failed to fetch YouTube metadata:', error);
+      // Fallback: use video ID to generate thumbnail
+      const videoId = extractVideoId(url);
+      if (videoId) {
+        return {
+          title: 'Video',
+          author: 'Unknown',
+          thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+          duration: undefined,
+        };
+      }
+      return null;
+    }
+  };
+
+  // Fetch preview when URL changes
+  React.useEffect(() => {
+    if (youtubeUrl && step === 'input') {
+      const videoId = extractVideoId(youtubeUrl);
+      if (videoId) {
+        fetchYouTubeMetadata(youtubeUrl).then(setYoutubePreview).catch(() => {
+          // Fallback thumbnail
+          setYoutubePreview({
+            title: 'Video',
+            author: 'Unknown',
+            thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+          });
+        });
+      } else {
+        setYoutubePreview(null);
+      }
+    } else {
+      setYoutubePreview(null);
+    }
+  }, [youtubeUrl, step]);
+
+  // Cleanup on unmount
+  React.useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
     };
-    onSave(newRecipe);
+  }, []);
+
+  const handleGenerate = async () => {
+    if (activeTab !== 'youtube' || !youtubeUrl) return;
+
+    // Cancel any existing polling
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    abortControllerRef.current = new AbortController();
+
+    setStep('generating');
+    setGeneratingProgress('Creating import job...');
+
+    try {
+      const { recipeAPI } = await import('../../api/client');
+      const { job_id } = await recipeAPI.createYoutubeImport(youtubeUrl);
+
+      // Poll for job completion
+      const pollInterval = 2000; // 2 seconds
+      const maxAttempts = 60; // 2 minutes max
+      let attempts = 0;
+
+      const pollJob = async (): Promise<void> => {
+        // Check if aborted
+        if (abortControllerRef.current?.signal.aborted) {
+          return;
+        }
+
+        attempts++;
+        if (attempts > maxAttempts) {
+          throw new Error('Import timed out after 2 minutes');
+        }
+
+        const job = await recipeAPI.getImportJob(job_id);
+        
+        // Check if aborted after async call
+        if (abortControllerRef.current?.signal.aborted) {
+          return;
+        }
+
+        setGeneratingProgress(`Processing... (${job.status})`);
+
+        if (job.status === 'READY' && job.recipe_id) {
+          // Fetch recipe
+          const recipe = await recipeAPI.getRecipe(job.recipe_id);
+          
+          if (abortControllerRef.current?.signal.aborted) {
+            return;
+          }
+          
+          // Transform to frontend format
+          setTitle(recipe.title);
+          setDescription(recipe.description || '');
+          setDuration(''); // Not in backend yet
+          setCuisine(''); // Not in backend yet
+          
+          // Transform ingredients
+          const transformedIngredients = recipe.ingredients.map((ing: string) => {
+            // Try to parse "amount name" format
+            const parts = ing.split(/\s+(.+)/);
+            return {
+              name: parts[1] || ing,
+              amount: parts[0] || '',
+            };
+          });
+          setIngredients(transformedIngredients);
+          
+          // Transform steps
+          const transformedSteps = recipe.steps.map((step: any) => ({
+            text: step.text,
+            timestamp: step.timestamp_sec > 0 ? formatTimestamp(step.timestamp_sec) : undefined,
+          }));
+          setSteps(transformedSteps);
+
+          setStep('editing');
+        } else if (job.status === 'FAILED') {
+          // Provide more user-friendly error messages
+          let errorMessage = job.error_message || 'Import failed';
+          if (errorMessage.includes('Transcript unavailable') || errorMessage.includes('Transcript too short')) {
+            errorMessage = 'This video does not have captions/transcripts available. Please try a different video with captions enabled.';
+          } else if (errorMessage.includes('Invalid YouTube URL')) {
+            errorMessage = 'Invalid YouTube URL. Please check the link and try again.';
+          }
+          throw new Error(errorMessage);
+        } else {
+          // Continue polling
+          setTimeout(() => {
+            if (!abortControllerRef.current?.signal.aborted) {
+              pollJob();
+            }
+          }, pollInterval);
+        }
+      };
+
+      await pollJob();
+    } catch (error: any) {
+      if (error.name === 'AbortError' || abortControllerRef.current?.signal.aborted) {
+        // User closed modal, silently stop
+        return;
+      }
+      setGeneratingProgress(`Error: ${error.message}`);
+      setTimeout(() => {
+        if (!abortControllerRef.current?.signal.aborted) {
+          setStep('input');
+          setGeneratingProgress('');
+        }
+      }, 3000);
+    }
+  };
+
+  const formatTimestamp = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const handleSave = async () => {
+    // Recipe is already saved via import job, just close and refresh
+    onClose();
+    // The parent component should refresh recipes list
+    window.location.reload();
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -101,7 +253,12 @@ export function CreateModal({ onClose, onSave }: CreateModalProps) {
         <div className="p-6 border-b border-gray-200 flex items-center justify-between">
           <h2 className="text-gray-900">Create Recipe</h2>
           <button
-            onClick={onClose}
+            onClick={() => {
+              if (abortControllerRef.current) {
+                abortControllerRef.current.abort();
+              }
+              onClose();
+            }}
             className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
           >
             <X className="w-5 h-5" />
@@ -153,14 +310,29 @@ export function CreateModal({ onClose, onSave }: CreateModalProps) {
                     />
                   </div>
 
-                  {youtubeUrl && (
+                  {youtubeUrl && youtubePreview && (
                     <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                       <h3 className="text-gray-900 text-sm mb-2">Preview</h3>
                       <div className="flex gap-3">
-                        <div className="w-32 h-20 bg-gray-300 rounded flex-shrink-0"></div>
-                        <div>
-                          <div className="text-gray-900 mb-1">Detected Video Title</div>
-                          <div className="text-sm text-gray-600">Channel Name • 12:34</div>
+                        <img
+                          src={youtubePreview.thumbnail}
+                          alt={youtubePreview.title}
+                          className="w-32 h-20 object-cover rounded flex-shrink-0"
+                          onError={(e) => {
+                            // Fallback to default thumbnail if image fails to load
+                            const target = e.target as HTMLImageElement;
+                            const videoId = extractVideoId(youtubeUrl);
+                            if (videoId) {
+                              target.src = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
+                            }
+                          }}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-gray-900 mb-1 font-medium truncate">{youtubePreview.title}</div>
+                          <div className="text-sm text-gray-600 truncate">
+                            {youtubePreview.author}
+                            {youtubePreview.duration && ` • ${youtubePreview.duration}`}
+                          </div>
                         </div>
                       </div>
                     </div>
