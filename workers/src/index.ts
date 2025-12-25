@@ -122,8 +122,37 @@ function parseVttToSegments(vttText: string): TranscriptSegment[] {
   return segments;
 }
 
+// Store transcript segments
+async function storeTranscript(
+  jobId: string,
+  segments: TranscriptSegment[],
+  transcriptText: string
+): Promise<void> {
+  const response = await fetch(`${RECIPE_INTERNAL_URL}/internal/import-jobs/${jobId}/transcript`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-service-token': SERVICE_TOKEN,
+    },
+    body: JSON.stringify({
+      provider: 'yt-dlp',
+      lang: 'en',
+      segments,
+      transcript_text: transcriptText,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Failed to store transcript: ${error}`);
+  }
+
+  const result = await response.json();
+  console.log(`Stored transcript segments: ${result.segment_count || segments.length} for jobId=${jobId}`);
+}
+
 // Fetch YouTube transcript using yt-dlp
-async function fetchTranscript(url: string, jobId: string): Promise<string> {
+async function fetchTranscript(url: string, jobId: string): Promise<{ transcriptText: string; segments: TranscriptSegment[] }> {
   const videoId = extractVideoId(url);
   if (!videoId) {
     throw new Error('Invalid YouTube URL');
@@ -199,7 +228,10 @@ async function fetchTranscript(url: string, jobId: string): Promise<string> {
       .map((seg) => `[${seg.start.toFixed(2)}s] ${seg.text}`)
       .join('\n');
 
-    return transcriptText;
+    // Store transcript segments in DB before returning
+    await storeTranscript(jobId, segments, transcriptText);
+
+    return { transcriptText, segments };
   } finally {
     // Cleanup temp directory - always runs even if errors occur
     try {
@@ -313,7 +345,8 @@ async function processJob(message: any) {
     // Fetch transcript
     let transcript: string;
     try {
-      transcript = await fetchTranscript(url, job_id);
+      const transcriptResult = await fetchTranscript(url, job_id);
+      transcript = transcriptResult.transcriptText;
       console.log(`Transcript fetched for job ${job_id}, length: ${transcript?.length || 0}`);
       
       if (!transcript || transcript.trim().length === 0) {

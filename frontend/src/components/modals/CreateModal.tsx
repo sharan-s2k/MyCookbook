@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { X, Upload, Camera, Loader, CheckCircle } from 'lucide-react';
 import type { Recipe } from '../../types';
 
 interface CreateModalProps {
   onClose: () => void;
-  onSave: (recipe: Recipe) => void;
+  onSave?: (recipe: Recipe) => void;
+  onRecipeCreated?: (recipeId: string) => void;
 }
 
 type CreateTab = 'youtube' | 'photo';
@@ -17,7 +19,8 @@ interface YouTubePreview {
   duration?: string;
 }
 
-export function CreateModal({ onClose, onSave }: CreateModalProps) {
+export function CreateModal({ onClose, onSave, onRecipeCreated }: CreateModalProps) {
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<CreateTab>('youtube');
   const [step, setStep] = useState<CreateStep>('input');
   const [youtubeUrl, setYoutubeUrl] = useState('');
@@ -155,38 +158,23 @@ export function CreateModal({ onClose, onSave }: CreateModalProps) {
         setGeneratingProgress(`Processing... (${job.status})`);
 
         if (job.status === 'READY' && job.recipe_id) {
-          // Fetch recipe
-          const recipe = await recipeAPI.getRecipe(job.recipe_id);
+          const recipeId = job.recipe_id;
+          console.log('Import job completed successfully, recipe_id:', recipeId);
           
           if (abortControllerRef.current?.signal.aborted) {
             return;
           }
           
-          // Transform to frontend format
-          setTitle(recipe.title);
-          setDescription(recipe.description || '');
-          setDuration(''); // Not in backend yet
-          setCuisine(''); // Not in backend yet
+          // Recipe is already saved in backend, navigate to it
+          if (onRecipeCreated) {
+            onRecipeCreated(recipeId);
+          } else {
+            // Fallback: navigate directly
+            navigate(`/recipes/${recipeId}`);
+          }
           
-          // Transform ingredients
-          const transformedIngredients = recipe.ingredients.map((ing: string) => {
-            // Try to parse "amount name" format
-            const parts = ing.split(/\s+(.+)/);
-            return {
-              name: parts[1] || ing,
-              amount: parts[0] || '',
-            };
-          });
-          setIngredients(transformedIngredients);
-          
-          // Transform steps
-          const transformedSteps = recipe.steps.map((step: any) => ({
-            text: step.text,
-            timestamp: step.timestamp_sec > 0 ? formatTimestamp(step.timestamp_sec) : undefined,
-          }));
-          setSteps(transformedSteps);
-
-          setStep('editing');
+          // Close modal - recipe detail page will load it from backend
+          onClose();
         } else if (job.status === 'FAILED') {
           // Provide more user-friendly error messages
           let errorMessage = job.error_message || 'Import failed';
@@ -229,10 +217,9 @@ export function CreateModal({ onClose, onSave }: CreateModalProps) {
   };
 
   const handleSave = async () => {
-    // Recipe is already saved via import job, just close and refresh
+    // This should not be called for YouTube imports (recipe is auto-saved)
+    // But if called (e.g., for manual recipes), just close
     onClose();
-    // The parent component should refresh recipes list
-    window.location.reload();
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {

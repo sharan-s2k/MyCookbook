@@ -381,7 +381,7 @@ function ProfileRoute() {
 function RecipeDetailRoute() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { cookbooks } = useAppContext();
+  const { cookbooks, setRecipes } = useAppContext();
   const [recipe, setRecipe] = useState<Recipe | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -441,34 +441,54 @@ function RecipeDetailRoute() {
   };
 
   const handleUpdateRecipe = (updatedRecipe: Recipe) => {
-    setRecipes(recipes.map(r => r.id === updatedRecipe.id ? updatedRecipe : r));
+    // Refresh recipe from backend
+    const fetchRecipe = async () => {
+      if (!id) return;
+      try {
+        const data = await recipeAPI.getRecipe(id);
+        const transformed: Recipe = {
+          id: data.id,
+          title: data.title,
+          description: data.description || '',
+          isPublic: data.is_public,
+          source_type: data.source_type,
+          source_ref: data.source_ref,
+          youtubeUrl: data.source_type === 'youtube' ? data.source_ref : undefined,
+          ingredients: Array.isArray(data.ingredients)
+            ? data.ingredients.map((ing: string) => {
+                const parts = ing.split(/\s+(.+)/);
+                return {
+                  name: parts[1] || ing,
+                  amount: parts[0] || '',
+                };
+              })
+            : [],
+          steps: data.steps.map((step: any) => ({
+            text: step.text,
+            timestamp: step.timestamp_sec > 0 ? formatTimestamp(step.timestamp_sec) : undefined,
+            timestamp_sec: step.timestamp_sec,
+            index: step.index,
+          })),
+          createdAt: new Date(data.created_at),
+        };
+        setRecipe(transformed);
+      } catch (error) {
+        console.error('Failed to refresh recipe:', error);
+      }
+    };
+    fetchRecipe();
   };
 
   const handleSaveToCookbook = (recipeId: string, cookbookId: string | null) => {
-    setRecipes(recipes.map(r => {
-      if (r.id === recipeId) {
-        const newCookbookIds = cookbookId 
-          ? [...r.cookbookIds.filter(id => id !== cookbookId), cookbookId]
-          : r.cookbookIds;
-        return { ...r, cookbookIds: cookbookId ? [...new Set([...r.cookbookIds, cookbookId])] : r.cookbookIds };
-      }
-      return r;
-    }));
-    
-    if (cookbookId) {
-      setCookbooks(cookbooks.map(cb => {
-        if (cb.id === cookbookId && !recipe.cookbookIds.includes(cookbookId)) {
-          return { ...cb, recipeCount: cb.recipeCount + 1, previewImages: [...cb.previewImages.slice(0, 3), recipe.thumbnail] };
-        }
-        return cb;
-      }));
-    }
+    // TODO: Implement backend API for cookbook assignment
+    // For now, just log
+    console.log('Save to cookbook not yet implemented', { recipeId, cookbookId });
   };
 
   const handleTogglePrivacy = (recipeId: string) => {
-    setRecipes(recipes.map(r => 
-      r.id === recipeId ? { ...r, isPublic: !r.isPublic } : r
-    ));
+    // TODO: Implement backend API for privacy toggle
+    // For now, just log
+    console.log('Toggle privacy not yet implemented', { recipeId });
   };
 
   return (
@@ -487,10 +507,62 @@ function RecipeDetailRoute() {
 function CookModeRoute() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { recipes } = useAppContext();
+  const [recipe, setRecipe] = useState<Recipe | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  const recipe = recipes.find(r => r.id === id);
-  if (!recipe) return <div>Recipe not found</div>;
+  useEffect(() => {
+    const fetchRecipe = async () => {
+      if (!id) {
+        setLoading(false);
+        return;
+      }
+      try {
+        const data = await recipeAPI.getRecipe(id);
+        // Transform backend format to frontend format
+        const transformed: Recipe = {
+          id: data.id,
+          title: data.title,
+          description: data.description || '',
+          isPublic: data.is_public,
+          source_type: data.source_type,
+          source_ref: data.source_ref,
+          youtubeUrl: data.source_type === 'youtube' ? data.source_ref : undefined,
+          ingredients: Array.isArray(data.ingredients)
+            ? data.ingredients.map((ing: string) => {
+                const parts = ing.split(/\s+(.+)/);
+                return {
+                  name: parts[1] || ing,
+                  amount: parts[0] || '',
+                };
+              })
+            : [],
+          steps: data.steps.map((step: any) => ({
+            text: step.text,
+            timestamp: step.timestamp_sec > 0 ? formatTimestamp(step.timestamp_sec) : undefined,
+            timestamp_sec: step.timestamp_sec,
+            index: step.index,
+          })),
+          createdAt: new Date(data.created_at),
+        };
+        setRecipe(transformed);
+      } catch (error) {
+        console.error('Failed to fetch recipe for cook mode:', error);
+        setRecipe(null);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchRecipe();
+  }, [id]);
+
+  const formatTimestamp = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  if (loading) return <div className="p-8">Loading...</div>;
+  if (!recipe) return <div className="p-8">Recipe not found</div>;
 
   const handleExit = () => {
     navigate(`/recipes/${recipe.id}`);
@@ -514,90 +586,7 @@ function App() {
   const isLoggingInRef = useRef(false);
 
   // All state hooks must be declared before any conditional returns
-  const [recipes, setRecipes] = useState<Recipe[]>([
-    {
-      id: 'r1',
-      title: 'Classic Carbonara',
-      thumbnail: 'https://images.unsplash.com/photo-1739417083034-4e9118f487be?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxwYXN0YSUyMGRpc2glMjBpdGFsaWFufGVufDF8fHx8MTc2NjAwNjYyNnww&ixlib=rb-4.1.0&q=80&w=1080',
-      isPublic: true,
-      duration: '25 min',
-      cuisine: 'Italian',
-      cookbookIds: ['cb1'],
-      createdAt: new Date('2024-12-10'),
-      cookedAt: new Date('2024-12-15'),
-      youtubeUrl: 'https://youtube.com/watch?v=example',
-      description: 'Authentic Italian carbonara with guanciale and pecorino romano.',
-      ingredients: [
-        { name: 'Spaghetti', amount: '400g' },
-        { name: 'Guanciale', amount: '200g' },
-        { name: 'Egg yolks', amount: '4' },
-        { name: 'Pecorino Romano', amount: '100g' },
-        { name: 'Black pepper', amount: '2 tsp' },
-      ],
-      steps: [
-        { text: 'Bring a large pot of salted water to boil', timestamp: '0:15' },
-        { text: 'Cut guanciale into small cubes and render in a pan', timestamp: '1:30' },
-        { text: 'Whisk egg yolks with grated pecorino and black pepper', timestamp: '3:00' },
-        { text: 'Cook spaghetti until al dente', timestamp: '4:20' },
-        { text: 'Toss pasta with guanciale, remove from heat, add egg mixture', timestamp: '6:45' },
-      ],
-      userId: 'user1',
-      likes: 42,
-    },
-    {
-      id: 'r2',
-      title: 'Mediterranean Quinoa Bowl',
-      thumbnail: 'https://images.unsplash.com/photo-1624340209404-4f479dd59708?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxoZWFsdGh5JTIwc2FsYWQlMjBib3dsfGVufDF8fHx8MTc2NjAzMjI4OXww&ixlib=rb-4.1.0&q=80&w=1080',
-      isPublic: false,
-      duration: '30 min',
-      cuisine: 'Mediterranean',
-      cookbookIds: ['cb2'],
-      createdAt: new Date('2024-12-12'),
-      description: 'Healthy grain bowl with roasted vegetables and tahini dressing.',
-      ingredients: [
-        { name: 'Quinoa', amount: '1 cup' },
-        { name: 'Cherry tomatoes', amount: '200g' },
-        { name: 'Cucumber', amount: '1' },
-        { name: 'Chickpeas', amount: '1 can' },
-        { name: 'Tahini', amount: '3 tbsp' },
-      ],
-      steps: [
-        { text: 'Cook quinoa according to package instructions' },
-        { text: 'Roast chickpeas with olive oil and spices at 400°F for 20 minutes' },
-        { text: 'Chop vegetables into bite-sized pieces' },
-        { text: 'Make tahini dressing with lemon juice and garlic' },
-        { text: 'Assemble bowl and drizzle with dressing' },
-      ],
-      userId: 'user1',
-    },
-    {
-      id: 'r3',
-      title: 'Chocolate Lava Cake',
-      thumbnail: 'https://images.unsplash.com/photo-1607257882338-70f7dd2ae344?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxkZXNzZXJ0JTIwY2hvY29sYXRlJTIwY2FrZXxlbnwxfHx8fDE3NjU5NTQxNTl8MA&ixlib=rb-4.1.0&q=80&w=1080',
-      isPublic: true,
-      duration: '20 min',
-      cuisine: 'French',
-      cookbookIds: ['cb1'],
-      createdAt: new Date('2024-12-08'),
-      description: 'Decadent molten chocolate cake with a gooey center.',
-      ingredients: [
-        { name: 'Dark chocolate', amount: '200g' },
-        { name: 'Butter', amount: '100g' },
-        { name: 'Eggs', amount: '3' },
-        { name: 'Sugar', amount: '75g' },
-        { name: 'Flour', amount: '50g' },
-      ],
-      steps: [
-        { text: 'Melt chocolate and butter together' },
-        { text: 'Whisk eggs and sugar until pale and fluffy' },
-        { text: 'Fold in melted chocolate and flour' },
-        { text: 'Pour into greased ramekins' },
-        { text: 'Bake at 425°F for 12 minutes' },
-      ],
-      userId: 'user1',
-      likes: 89,
-    },
-  ]);
+  const [recipes, setRecipes] = useState<Recipe[]>([]);
 
   const [cookbooks, setCookbooks] = useState<Cookbook[]>([
     {
@@ -744,6 +733,9 @@ function App() {
       });
       setIsAuthenticated(true);
       console.log('handleLogin: Successfully logged in');
+      
+      // Fetch recipes after successful login
+      await fetchRecipes();
     } catch (error: any) {
       console.error('handleLogin: Failed to get user after login:', error);
       console.error('handleLogin: Error details:', {
@@ -764,10 +756,78 @@ function App() {
     }
   };
 
+  // Fetch recipes from backend
+  const fetchRecipes = async () => {
+    try {
+      console.log('Fetching recipes from backend...');
+      const backendRecipes = await recipeAPI.listRecipes();
+      console.log(`Fetched ${backendRecipes.length} recipes from backend`, {
+        count: backendRecipes.length,
+        firstId: backendRecipes[0]?.id,
+        isUUID: backendRecipes[0]?.id?.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i) !== null,
+      });
+
+      // Transform backend format to frontend format
+      const transformedRecipes: Recipe[] = backendRecipes.map((r: any) => ({
+        id: r.id,
+        title: r.title,
+        description: r.description || '',
+        isPublic: r.is_public,
+        source_type: r.source_type,
+        source_ref: r.source_ref,
+        youtubeUrl: r.source_type === 'youtube' ? r.source_ref : undefined,
+        ingredients: Array.isArray(r.ingredients)
+          ? r.ingredients.map((ing: string | { name: string; amount: string }) => {
+              if (typeof ing === 'string') {
+                // Try to parse "amount name" format
+                const parts = ing.split(/\s+(.+)/);
+                return {
+                  name: parts[1] || ing,
+                  amount: parts[0] || '',
+                };
+              }
+              return ing;
+            })
+          : [],
+        steps: Array.isArray(r.steps)
+          ? r.steps.map((step: any) => ({
+              text: step.text || '',
+              timestamp: step.timestamp_sec > 0 ? formatTimestamp(step.timestamp_sec) : undefined,
+              timestamp_sec: step.timestamp_sec,
+              index: step.index,
+            }))
+          : [],
+        createdAt: new Date(r.created_at),
+        userId: r.owner_id,
+        owner_id: r.owner_id,
+      }));
+
+      setRecipes(transformedRecipes);
+    } catch (error: any) {
+      console.error('Failed to fetch recipes:', error);
+      // Keep empty array on error - user can still use the app
+      setRecipes([]);
+    }
+  };
+
+  const formatTimestamp = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // Fetch recipes when authenticated
+  useEffect(() => {
+    if (isAuthenticated && currentUser) {
+      fetchRecipes();
+    }
+  }, [isAuthenticated, currentUser?.id]);
+
   const handleLogout = async () => {
     await authAPI.logout();
     setIsAuthenticated(false);
     setCurrentUser(null);
+    setRecipes([]); // Clear recipes on logout
   };
 
   if (loading) {
@@ -836,9 +896,10 @@ function App() {
       {showCreateModal && (
         <CreateModal
           onClose={() => setShowCreateModal(false)}
-          onSave={(recipe) => {
-            setRecipes([...recipes, recipe]);
-            setShowCreateModal(false);
+          onRecipeCreated={(recipeId) => {
+            // Refresh recipe list to include the new one
+            // Navigation is handled inside CreateModal
+            fetchRecipes();
           }}
         />
       )}

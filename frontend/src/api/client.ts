@@ -223,6 +223,23 @@ export const authAPI = {
 
 // Recipe API
 export const recipeAPI = {
+  async listRecipes() {
+    const response = await fetchWithAuth('/recipes');
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to list recipes';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
+
   async createYoutubeImport(url: string) {
     const response = await fetchWithAuth('/recipes/import/youtube', {
       method: 'POST',

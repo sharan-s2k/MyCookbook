@@ -217,10 +217,73 @@ fastify.get('/import-jobs/:job_id', { preHandler: extractUserId }, async (reques
   }
 });
 
+// Helper: Validate UUID format
+function isValidUUID(str: string): boolean {
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  return uuidRegex.test(str);
+}
+
+// GET /recipes (protected) - List user's recipes
+fastify.get('/', { preHandler: extractUserId }, async (request, reply) => {
+  const userId = (request as any).userId;
+
+  const client = await pool.connect();
+  try {
+    const result = await client.query(
+      `SELECT id, title, description, is_public, source_type, source_ref, status,
+              ingredients, steps, created_at, updated_at
+       FROM recipes
+       WHERE owner_id = $1
+       ORDER BY created_at DESC`,
+      [userId]
+    );
+
+    fastify.log.info({ userId, count: result.rows.length }, 'List recipes for user');
+
+    const recipes = result.rows.map((recipe) => ({
+      id: recipe.id,
+      title: recipe.title,
+      description: recipe.description,
+      is_public: recipe.is_public,
+      source_type: recipe.source_type,
+      source_ref: recipe.source_ref,
+      ingredients: recipe.ingredients,
+      steps: recipe.steps,
+      created_at: recipe.created_at,
+      updated_at: recipe.updated_at,
+    }));
+
+    return reply.send(recipes);
+  } catch (error) {
+    fastify.log.error({ error }, 'Failed to list recipes');
+    return reply.code(500).send({
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to list recipes',
+        request_id: request.id,
+      },
+    });
+  } finally {
+    client.release();
+  }
+});
+
 // GET /:recipe_id (protected)
 fastify.get('/:recipe_id', { preHandler: extractUserId }, async (request, reply) => {
   const userId = (request as any).userId;
   const { recipe_id } = request.params as { recipe_id: string };
+
+  // Validate UUID format before querying database
+  if (!isValidUUID(recipe_id)) {
+    fastify.log.warn({ recipe_id }, 'Invalid recipe id format (not a UUID)');
+    return reply.code(400).send({
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid recipe id format. Recipe id must be a valid UUID.',
+        request_id: request.id,
+      },
+    });
+  }
 
   const client = await pool.connect();
   try {
@@ -350,6 +413,78 @@ fastify.post(
   }
 );
 
+// POST /internal/import-jobs/:job_id/transcript (internal)
+fastify.post(
+  '/internal/import-jobs/:job_id/transcript',
+  { preHandler: verifyServiceToken },
+  async (request, reply) => {
+    const { job_id } = request.params as { job_id: string };
+    const { provider, lang, segments, transcript_text } = request.body as {
+      provider?: string;
+      lang?: string;
+      segments?: Array<{ start: number; dur: number; text: string }>;
+      transcript_text?: string;
+    };
+
+    if (!segments || !Array.isArray(segments) || segments.length === 0) {
+      return reply.code(400).send({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'segments array is required and must not be empty',
+          request_id: request.id,
+        },
+      });
+    }
+
+    const client = await pool.connect();
+    try {
+      // Verify job exists
+      const jobCheck = await client.query(
+        `SELECT id FROM recipe_import_jobs WHERE id = $1`,
+        [job_id]
+      );
+
+      if (jobCheck.rows.length === 0) {
+        return reply.code(404).send({
+          error: {
+            code: 'NOT_FOUND',
+            message: 'Import job not found',
+            request_id: request.id,
+          },
+        });
+      }
+
+      // Store transcript segments
+      const transcriptData = {
+        provider: provider || 'yt-dlp',
+        lang: lang || 'en',
+        segments,
+        transcript_text: transcript_text || null,
+      };
+
+      await client.query(
+        `UPDATE recipe_import_jobs SET transcript_segments = $1::jsonb, updated_at = NOW() WHERE id = $2`,
+        [JSON.stringify(transcriptData), job_id]
+      );
+
+      fastify.log.info({ job_id, segmentCount: segments.length }, 'Stored transcript for jobId');
+
+      return reply.send({ success: true, segment_count: segments.length });
+    } catch (error) {
+      fastify.log.error({ error, job_id }, 'Failed to store transcript');
+      return reply.code(500).send({
+        error: {
+          code: 'INTERNAL_ERROR',
+          message: 'Failed to store transcript',
+          request_id: request.id,
+        },
+      });
+    } finally {
+      client.release();
+    }
+  }
+);
+
 // POST /internal/recipes/from-import-job (internal)
 fastify.post(
   '/internal/recipes/from-import-job',
@@ -449,8 +584,28 @@ fastify.post(
         [recipeId, owner_id, title, description || null, source_ref, JSON.stringify(ingredients), JSON.stringify(steps)]
       );
 
-      // Store raw transcript if provided
-      if (raw_transcript) {
+      // Copy transcript from job to recipe_raw_source (preferred: use stored segments)
+      const transcriptResult = await client.query(
+        `SELECT transcript_segments FROM recipe_import_jobs WHERE id = $1`,
+        [job_id]
+      );
+
+      if (transcriptResult.rows.length > 0 && transcriptResult.rows[0].transcript_segments) {
+        const transcriptData = transcriptResult.rows[0].transcript_segments;
+        // Store as JSONB with both structured segments and text
+        await client.query(
+          `INSERT INTO recipe_raw_source (recipe_id, source_text, source_json) 
+           VALUES ($1, $2, $3::jsonb)
+           ON CONFLICT (recipe_id) DO UPDATE SET source_text = $2, source_json = $3::jsonb`,
+          [
+            recipeId,
+            transcriptData.transcript_text || raw_transcript || '',
+            JSON.stringify(transcriptData)
+          ]
+        );
+        fastify.log.info({ job_id, recipe_id: recipeId, segmentCount: transcriptData.segments?.length }, 'Copied transcript from job to recipe');
+      } else if (raw_transcript) {
+        // Fallback: store raw transcript text if no segments stored
         await client.query(
           `INSERT INTO recipe_raw_source (recipe_id, source_text) VALUES ($1, $2)
            ON CONFLICT (recipe_id) DO UPDATE SET source_text = $2`,
@@ -492,6 +647,65 @@ fastify.post(
         error: {
           code: 'INTERNAL_ERROR',
           message: 'Failed to create recipe',
+          request_id: request.id,
+        },
+      });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+// GET /internal/recipes/:recipe_id/transcript (internal)
+fastify.get(
+  '/internal/recipes/:recipe_id/transcript',
+  { preHandler: verifyServiceToken },
+  async (request, reply) => {
+    const { recipe_id } = request.params as { recipe_id: string };
+
+    const client = await pool.connect();
+    try {
+      const result = await client.query(
+        `SELECT source_json, source_text FROM recipe_raw_source WHERE recipe_id = $1`,
+        [recipe_id]
+      );
+
+      if (result.rows.length === 0) {
+        return reply.code(404).send({
+          error: {
+            code: 'NOT_FOUND',
+            message: 'Transcript not found for this recipe',
+            request_id: request.id,
+          },
+        });
+      }
+
+      const row = result.rows[0];
+      // Prefer structured JSON (segments), fallback to text
+      if (row.source_json) {
+        return reply.send(row.source_json);
+      } else if (row.source_text) {
+        return reply.send({
+          provider: 'unknown',
+          lang: 'en',
+          transcript_text: row.source_text,
+          segments: [],
+        });
+      } else {
+        return reply.code(404).send({
+          error: {
+            code: 'NOT_FOUND',
+            message: 'No transcript data available',
+            request_id: request.id,
+          },
+        });
+      }
+    } catch (error) {
+      fastify.log.error({ error, recipe_id }, 'Failed to get transcript');
+      return reply.code(500).send({
+        error: {
+          code: 'INTERNAL_ERROR',
+          message: 'Failed to get transcript',
           request_id: request.id,
         },
       });
