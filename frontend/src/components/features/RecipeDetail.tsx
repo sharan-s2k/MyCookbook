@@ -3,6 +3,7 @@ import { ChefHat, Edit, BookOpen, Lock, Globe, Play, ChevronLeft } from 'lucide-
 import type { Recipe } from '../../types';
 import { CookbookSelectModal } from '../modals/CookbookSelectModal';
 import { EditRecipeModal } from '../modals/EditRecipeModal';
+import { getRecipeThumbnail, getYouTubeThumbnailUrl } from '../../utils/images';
 
 interface RecipeDetailProps {
   recipe: Recipe;
@@ -71,11 +72,19 @@ export function RecipeDetail({
             <div>
               {/* Video thumbnail */}
               {recipe.youtubeUrl && (
-                <div className="aspect-video bg-gray-900 rounded-xl overflow-hidden mb-4 relative group cursor-pointer">
+                <div 
+                  onClick={onStartCookMode}
+                  className="aspect-video bg-gray-900 rounded-xl overflow-hidden mb-4 relative group cursor-pointer"
+                >
                   <img
-                    src={recipe.thumbnail}
+                    src={getRecipeThumbnail(recipe.thumbnail, recipe.youtubeUrl)}
                     alt={recipe.title}
                     className="w-full h-full object-cover"
+                    onError={(e) => {
+                      // Fallback to default if image fails to load
+                      const target = e.target as HTMLImageElement;
+                      target.src = '/default_recipe.jpg';
+                    }}
                   />
                   <div className="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                     <div className="w-12 h-12 md:w-16 md:h-16 bg-white/90 rounded-full flex items-center justify-center">

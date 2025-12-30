@@ -20,6 +20,7 @@ type AppContextType = {
   currentUser: User;
   recipes: Recipe[];
   setRecipes: React.Dispatch<React.SetStateAction<Recipe[]>>;
+  updateRecipeInStore: (updatedRecipe: Partial<Recipe> & { id: string }) => void;
   cookbooks: Cookbook[];
   setCookbooks: React.Dispatch<React.SetStateAction<Cookbook[]>>;
   feedPosts: FeedPost[];
@@ -117,7 +118,7 @@ function AuthenticatedLayout({ children }: { children: React.ReactNode }) {
 // Route components
 function MyRecipesRoute() {
   const navigate = useNavigate();
-  const { recipes, cookbooks, setRecipes, setCookbooks } = useAppContext();
+  const { recipes, cookbooks, setRecipes, setCookbooks, updateRecipeInStore } = useAppContext();
 
   const handleViewRecipe = (recipe: Recipe) => {
     navigate(`/recipes/${recipe.id}`);
@@ -128,15 +129,16 @@ function MyRecipesRoute() {
   };
 
   const handleUpdateRecipe = (updatedRecipe: Recipe) => {
-    setRecipes(recipes.map(r => r.id === updatedRecipe.id ? updatedRecipe : r));
+    updateRecipeInStore(updatedRecipe);
   };
 
   const handleMoveToCookbook = (recipeId: string, cookbookId: string | null) => {
     setRecipes(recipes.map(r => {
       if (r.id === recipeId) {
+        const currentCookbookIds = r.cookbookIds || [];
         const newCookbookIds = cookbookId 
-          ? [...r.cookbookIds.filter(id => id !== cookbookId), cookbookId]
-          : r.cookbookIds.filter(id => !cookbooks.find(cb => cb.id === id));
+          ? [...currentCookbookIds.filter(id => id !== cookbookId), cookbookId]
+          : currentCookbookIds.filter(id => !cookbooks.find(cb => cb.id === id));
         return { ...r, cookbookIds: cookbookId ? [cookbookId] : newCookbookIds };
       }
       return r;
@@ -146,11 +148,12 @@ function MyRecipesRoute() {
     if (cookbookId) {
       const recipe = recipes.find(r => r.id === recipeId);
       if (recipe) {
+        const recipeCookbookIds = recipe.cookbookIds || [];
         setCookbooks(cookbooks.map(cb => {
-          if (cb.id === cookbookId && !recipe.cookbookIds.includes(cookbookId)) {
-            return { ...cb, recipeCount: cb.recipeCount + 1, previewImages: [...cb.previewImages.slice(0, 3), recipe.thumbnail] };
+          if (cb.id === cookbookId && !recipeCookbookIds.includes(cookbookId)) {
+            return { ...cb, recipeCount: cb.recipeCount + 1, previewImages: [...cb.previewImages.slice(0, 3), recipe.thumbnail || ''] };
           }
-          if (recipe.cookbookIds.includes(cb.id) && cb.id !== cookbookId) {
+          if (recipeCookbookIds.includes(cb.id) && cb.id !== cookbookId) {
             return { ...cb, recipeCount: Math.max(0, cb.recipeCount - 1), previewImages: cb.previewImages.filter(img => img !== recipe.thumbnail) };
           }
           return cb;
@@ -174,9 +177,10 @@ function MyRecipesRoute() {
       onDeleteRecipe={(id) => {
         const recipe = recipes.find(r => r.id === id);
         if (recipe) {
+          const recipeCookbookIds = recipe.cookbookIds || [];
           setCookbooks(cookbooks.map(cb => ({
             ...cb,
-            recipeCount: cb.recipeCount - (recipe.cookbookIds.includes(cb.id) ? 1 : 0),
+            recipeCount: cb.recipeCount - (recipeCookbookIds.includes(cb.id) ? 1 : 0),
             previewImages: cb.previewImages.filter(img => img !== recipe.thumbnail)
           })));
         }
@@ -217,7 +221,7 @@ function CookbooksRoute() {
     // Remove cookbook from recipes
     setRecipes(recipes.map(r => ({
       ...r,
-      cookbookIds: r.cookbookIds.filter(cbId => cbId !== id)
+      cookbookIds: (r.cookbookIds || []).filter(cbId => cbId !== id)
     })));
     setCookbooks(cookbooks.filter(c => c.id !== id));
   };
@@ -236,7 +240,7 @@ function CookbooksRoute() {
 function CookbookDetailRoute() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { recipes, cookbooks, setRecipes, setCookbooks } = useAppContext();
+  const { recipes, cookbooks, setRecipes, setCookbooks, updateRecipeInStore } = useAppContext();
 
   const cookbook = cookbooks.find(cb => cb.id === id);
   if (!cookbook) return <div className="p-8">Cookbook not found</div>;
@@ -250,13 +254,14 @@ function CookbookDetailRoute() {
   };
 
   const handleUpdateRecipe = (updatedRecipe: Recipe) => {
-    setRecipes(recipes.map(r => r.id === updatedRecipe.id ? updatedRecipe : r));
+    updateRecipeInStore(updatedRecipe);
   };
 
   const handleMoveToCookbook = (recipeId: string, cookbookId: string | null) => {
     setRecipes(recipes.map(r => {
       if (r.id === recipeId) {
-        return { ...r, cookbookIds: cookbookId ? [cookbookId] : r.cookbookIds.filter(id => id !== cookbook.id) };
+        const currentCookbookIds = r.cookbookIds || [];
+        return { ...r, cookbookIds: cookbookId ? [cookbookId] : currentCookbookIds.filter(id => id !== cookbook.id) };
       }
       return r;
     }));
@@ -264,11 +269,12 @@ function CookbookDetailRoute() {
     if (cookbookId && cookbookId !== cookbook.id) {
       const recipe = recipes.find(r => r.id === recipeId);
       if (recipe) {
+        const recipeCookbookIds = recipe.cookbookIds || [];
         setCookbooks(cookbooks.map(cb => {
-          if (cb.id === cookbookId && !recipe.cookbookIds.includes(cookbookId)) {
-            return { ...cb, recipeCount: cb.recipeCount + 1, previewImages: [...cb.previewImages.slice(0, 3), recipe.thumbnail] };
+          if (cb.id === cookbookId && !recipeCookbookIds.includes(cookbookId)) {
+            return { ...cb, recipeCount: cb.recipeCount + 1, previewImages: [...cb.previewImages.slice(0, 3), recipe.thumbnail || ''].filter(Boolean) };
           }
-          if (cb.id === cookbook.id && recipe.cookbookIds.includes(cookbook.id)) {
+          if (cb.id === cookbook.id && recipeCookbookIds.includes(cookbook.id)) {
             return { ...cb, recipeCount: Math.max(0, cb.recipeCount - 1), previewImages: cb.previewImages.filter(img => img !== recipe.thumbnail) };
           }
           return cb;
@@ -285,16 +291,17 @@ function CookbookDetailRoute() {
 
   return (
     <MyRecipes
-      recipes={recipes.filter(r => r.cookbookIds.includes(cookbook.id))}
+      recipes={recipes.filter(r => (r.cookbookIds || []).includes(cookbook.id))}
       cookbooks={cookbooks}
       onViewRecipe={handleViewRecipe}
       onStartCook={handleStartCook}
       onDeleteRecipe={(id) => {
         const recipe = recipes.find(r => r.id === id);
         if (recipe) {
+          const recipeCookbookIds = recipe.cookbookIds || [];
           setCookbooks(cookbooks.map(cb => ({
             ...cb,
-            recipeCount: cb.recipeCount - (recipe.cookbookIds.includes(cb.id) ? 1 : 0),
+            recipeCount: cb.recipeCount - (recipeCookbookIds.includes(cb.id) ? 1 : 0),
             previewImages: cb.previewImages.filter(img => img !== recipe.thumbnail)
           })));
         }
@@ -381,7 +388,7 @@ function ProfileRoute() {
 function RecipeDetailRoute() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { cookbooks, setRecipes } = useAppContext();
+  const { cookbooks, updateRecipeInStore } = useAppContext();
   const [recipe, setRecipe] = useState<Recipe | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -441,42 +448,10 @@ function RecipeDetailRoute() {
   };
 
   const handleUpdateRecipe = (updatedRecipe: Recipe) => {
-    // Refresh recipe from backend
-    const fetchRecipe = async () => {
-      if (!id) return;
-      try {
-        const data = await recipeAPI.getRecipe(id);
-        const transformed: Recipe = {
-          id: data.id,
-          title: data.title,
-          description: data.description || '',
-          isPublic: data.is_public,
-          source_type: data.source_type,
-          source_ref: data.source_ref,
-          youtubeUrl: data.source_type === 'youtube' ? data.source_ref : undefined,
-          ingredients: Array.isArray(data.ingredients)
-            ? data.ingredients.map((ing: string) => {
-                const parts = ing.split(/\s+(.+)/);
-                return {
-                  name: parts[1] || ing,
-                  amount: parts[0] || '',
-                };
-              })
-            : [],
-          steps: data.steps.map((step: any) => ({
-            text: step.text,
-            timestamp: step.timestamp_sec > 0 ? formatTimestamp(step.timestamp_sec) : undefined,
-            timestamp_sec: step.timestamp_sec,
-            index: step.index,
-          })),
-          createdAt: new Date(data.created_at),
-        };
-        setRecipe(transformed);
-      } catch (error) {
-        console.error('Failed to refresh recipe:', error);
-      }
-    };
-    fetchRecipe();
+    // Update local state immediately
+    setRecipe(updatedRecipe);
+    // Update global store so list views reflect changes immediately
+    updateRecipeInStore(updatedRecipe);
   };
 
   const handleSaveToCookbook = (recipeId: string, cookbookId: string | null) => {
@@ -816,6 +791,57 @@ function App() {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
+  // Helper: Normalize date fields (convert string to Date if needed)
+  const normalizeRecipeDate = (date: Date | string | undefined): Date | undefined => {
+    if (!date) return undefined;
+    if (date instanceof Date) return date;
+    const parsed = new Date(date);
+    return isNaN(parsed.getTime()) ? undefined : parsed;
+  };
+
+  // Helper: Merge recipe updates, preserving store-only fields
+  const mergeRecipeUpdate = (existing: Recipe, patch: Partial<Recipe>): Recipe => {
+    // Normalize dates
+    const createdAt = patch.createdAt !== undefined 
+      ? normalizeRecipeDate(patch.createdAt) || existing.createdAt
+      : existing.createdAt;
+    const cookedAt = patch.cookedAt !== undefined
+      ? normalizeRecipeDate(patch.cookedAt) || existing.cookedAt
+      : existing.cookedAt;
+
+    // Merge: existing fields first, then patch fields
+    // But preserve store-only fields if patch doesn't provide them
+    return {
+      ...existing,
+      ...patch,
+      // Preserve arrays if patch doesn't provide them or provides undefined
+      cookbookIds: patch.cookbookIds !== undefined ? patch.cookbookIds : existing.cookbookIds,
+      // Preserve dates (already normalized above)
+      createdAt,
+      cookedAt,
+      // Don't overwrite with undefined values
+      userId: patch.userId !== undefined ? patch.userId : existing.userId,
+      owner_id: patch.owner_id !== undefined ? patch.owner_id : existing.owner_id,
+      author: patch.author !== undefined ? patch.author : existing.author,
+      likes: patch.likes !== undefined ? patch.likes : existing.likes,
+      thumbnail: patch.thumbnail !== undefined ? patch.thumbnail : existing.thumbnail,
+      duration: patch.duration !== undefined ? patch.duration : existing.duration,
+      cuisine: patch.cuisine !== undefined ? patch.cuisine : existing.cuisine,
+    };
+  };
+
+  // Update a recipe in the global store (merges updates, preserves store-only fields)
+  const updateRecipeInStore = (updatedRecipe: Partial<Recipe> & { id: string }) => {
+    setRecipes(prevRecipes => 
+      prevRecipes.map(r => {
+        if (r.id === updatedRecipe.id) {
+          return mergeRecipeUpdate(r, updatedRecipe);
+        }
+        return r;
+      })
+    );
+  };
+
   // Fetch recipes when authenticated
   useEffect(() => {
     if (isAuthenticated && currentUser) {
@@ -848,6 +874,7 @@ function App() {
     currentUser,
     recipes,
     setRecipes,
+    updateRecipeInStore,
     cookbooks,
     setCookbooks,
     feedPosts,

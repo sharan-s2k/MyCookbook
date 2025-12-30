@@ -1,6 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { X, CheckCircle } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { X, CheckCircle, Loader } from 'lucide-react';
 import type { Recipe } from '../../types';
+import { recipeAPI } from '../../api/client';
+import { useAppContext } from '../../App';
 
 interface EditRecipeModalProps {
   recipe: Recipe;
@@ -9,13 +11,32 @@ interface EditRecipeModalProps {
 }
 
 export function EditRecipeModal({ recipe, onSave, onClose }: EditRecipeModalProps) {
+  const { updateRecipeInStore } = useAppContext();
+  
+  // Normalize ingredients to always be object format for editing
+  const normalizeIngredients = (ings: Recipe['ingredients']): Array<{ name: string; amount: string }> => {
+    if (!Array.isArray(ings)) return [];
+    return ings.map(ing => {
+      if (typeof ing === 'string') {
+        const parts = ing.split(/\s+(.+)/);
+        return {
+          name: parts[1] || ing,
+          amount: parts[0] || '',
+        };
+      }
+      return ing;
+    });
+  };
+
   const [title, setTitle] = useState(recipe.title);
   const [description, setDescription] = useState(recipe.description);
   const [duration, setDuration] = useState(recipe.duration);
   const [cuisine, setCuisine] = useState(recipe.cuisine);
   const [isPublic, setIsPublic] = useState(recipe.isPublic);
-  const [ingredients, setIngredients] = useState(recipe.ingredients);
+  const [ingredients, setIngredients] = useState<Array<{ name: string; amount: string }>>(normalizeIngredients(recipe.ingredients));
   const [steps, setSteps] = useState(recipe.steps);
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setTitle(recipe.title);
@@ -23,23 +44,108 @@ export function EditRecipeModal({ recipe, onSave, onClose }: EditRecipeModalProp
     setDuration(recipe.duration);
     setCuisine(recipe.cuisine);
     setIsPublic(recipe.isPublic);
-    setIngredients(recipe.ingredients);
+    setIngredients(normalizeIngredients(recipe.ingredients));
     setSteps(recipe.steps);
   }, [recipe]);
 
-  const handleSave = () => {
-    const updatedRecipe: Recipe = {
-      ...recipe,
-      title,
-      description,
-      duration,
-      cuisine,
-      isPublic,
-      ingredients,
-      steps,
-    };
-    onSave(updatedRecipe);
-    onClose();
+  const handleSave = async () => {
+    setIsSaving(true);
+    setError(null);
+
+    try {
+      // Transform frontend format to backend format
+      const backendIngredients = (Array.isArray(ingredients) ? ingredients : []).map((ing: any) => {
+        if (typeof ing === 'string') {
+          return ing;
+        }
+        const amount = ing.amount || '';
+        const name = ing.name || '';
+        return amount ? `${amount} ${name}`.trim() : name;
+      });
+
+      const backendSteps = (Array.isArray(steps) ? steps : []).map((step: any, idx: number) => {
+        return {
+          index: step.index !== undefined ? step.index : idx + 1,
+          text: step.text || '',
+          timestamp_sec: step.timestamp_sec || 0,
+        };
+      });
+
+      // Call update API
+      // Send description as null if empty string (user cleared it), undefined if not provided
+      const updatePayload: {
+        title: string;
+        description?: string | null;
+        is_public: boolean;
+        ingredients: string[];
+        steps: any[];
+      } = {
+        title: title.trim(),
+        is_public: isPublic,
+        ingredients: backendIngredients,
+        steps: backendSteps,
+      };
+      
+      // Always send description since user can edit it in the form
+      // If empty, send null to clear it in backend
+      updatePayload.description = description.trim() || null;
+
+      const updatedData = await recipeAPI.updateRecipe(recipe.id, updatePayload);
+
+      // Transform backend response to frontend format (only backend fields)
+      // Store-only fields (cookbookIds, author, etc.) will be preserved by updateRecipeInStore merge
+      const backendFields: Partial<Recipe> & { id: string } = {
+        id: updatedData.id,
+        title: updatedData.title,
+        description: updatedData.description || '',
+        isPublic: updatedData.is_public,
+        source_type: updatedData.source_type,
+        source_ref: updatedData.source_ref,
+        youtubeUrl: updatedData.source_type === 'youtube' ? updatedData.source_ref : undefined,
+        ingredients: Array.isArray(updatedData.ingredients)
+          ? updatedData.ingredients.map((ing: string) => {
+              const parts = ing.split(/\s+(.+)/);
+              return {
+                name: parts[1] || ing,
+                amount: parts[0] || '',
+              };
+            })
+          : [],
+        steps: updatedData.steps.map((step: any) => ({
+          text: step.text,
+          timestamp: step.timestamp_sec > 0 ? formatTimestamp(step.timestamp_sec) : undefined,
+          timestamp_sec: step.timestamp_sec,
+          index: step.index,
+        })),
+        createdAt: new Date(updatedData.created_at),
+      };
+
+      // Update global store with backend fields (merge preserves store-only fields)
+      updateRecipeInStore(backendFields);
+
+      // Create updated recipe for local state and callback
+      // This preserves store-only fields like cookbookIds, author, etc.
+      const updatedRecipe: Recipe = {
+        ...recipe,
+        ...backendFields,
+        // Ensure dates are Date objects
+        createdAt: backendFields.createdAt || recipe.createdAt,
+      };
+
+      onSave(updatedRecipe);
+      onClose();
+    } catch (error: any) {
+      console.error('Failed to update recipe:', error);
+      setError(error.message || 'Failed to save recipe. Please try again.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const formatTimestamp = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
   const addIngredient = () => {
@@ -72,6 +178,11 @@ export function EditRecipeModal({ recipe, onSave, onClose }: EditRecipeModalProp
         </div>
 
         <div className="flex-1 overflow-y-auto p-6">
+          {error && (
+            <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+              <p className="text-sm text-red-800">{error}</p>
+            </div>
+          )}
           <div className="max-w-3xl mx-auto space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
@@ -221,10 +332,20 @@ export function EditRecipeModal({ recipe, onSave, onClose }: EditRecipeModalProp
           </button>
           <button
             onClick={handleSave}
-            className="px-6 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg transition-colors flex items-center gap-2"
+            disabled={isSaving}
+            className="px-6 py-2 bg-orange-500 hover:bg-orange-600 disabled:bg-gray-400 disabled:cursor-not-allowed text-white rounded-lg transition-colors flex items-center gap-2"
           >
-            <CheckCircle className="w-5 h-5" />
-            Save changes
+            {isSaving ? (
+              <>
+                <Loader className="w-5 h-5 animate-spin" />
+                Saving...
+              </>
+            ) : (
+              <>
+                <CheckCircle className="w-5 h-5" />
+                Save changes
+              </>
+            )}
           </button>
         </div>
       </div>

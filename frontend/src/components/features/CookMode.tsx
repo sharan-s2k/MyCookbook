@@ -30,14 +30,23 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
     { type: 'assistant', text: 'Ready to cook! I can help you navigate steps, answer questions, and set timers.' }
   ]);
   const [youtubePlayer, setYoutubePlayer] = useState<any>(null);
+  const playerContainerRef = React.useRef<HTMLDivElement>(null);
 
   const currentStep = recipe.steps[currentStepIndex];
 
   // Extract video ID from YouTube URL
   const getVideoId = (url?: string): string | null => {
     if (!url) return null;
-    const match = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\n?#]+)/);
-    return match ? match[1] : null;
+    // Handle various YouTube URL formats
+    const patterns = [
+      /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/,
+      /youtube\.com\/watch\?.*v=([^&\n?#]+)/,
+    ];
+    for (const pattern of patterns) {
+      const match = url.match(pattern);
+      if (match) return match[1];
+    }
+    return null;
   };
 
   const videoId = getVideoId(recipe.youtubeUrl || recipe.source_ref);
@@ -46,31 +55,106 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
   useEffect(() => {
     if (!videoId) return;
 
-    const tag = document.createElement('script');
-    tag.src = 'https://www.youtube.com/iframe_api';
-    const firstScriptTag = document.getElementsByTagName('script')[0];
-    firstScriptTag.parentNode?.insertBefore(tag, firstScriptTag);
+    let player: any = null;
+    let scriptLoaded = false;
 
-    (window as any).onYouTubeIframeAPIReady = () => {
-      const player = new (window as any).YT.Player('youtube-player', {
-        videoId: videoId,
-        playerVars: {
-          autoplay: 0,
-          controls: 1,
-          rel: 0,
-        },
-        events: {
-          onReady: () => {
-            setYoutubePlayer(player);
+    const initializePlayer = () => {
+      // Wait for DOM element to be available using ref
+      const playerElement = playerContainerRef.current;
+      if (!playerElement) {
+        // Retry after a short delay if element doesn't exist yet
+        setTimeout(initializePlayer, 100);
+        return;
+      }
+
+      // Check if player already exists in this container
+      if (playerElement.querySelector('iframe')) {
+        console.log('Player already initialized in container');
+        return;
+      }
+
+      try {
+        player = new (window as any).YT.Player(playerElement, {
+          videoId: videoId,
+          playerVars: {
+            autoplay: 0,
+            controls: 1,
+            rel: 0,
+            modestbranding: 1,
+            enablejsapi: 1,
           },
-        },
-      });
+          events: {
+            onReady: (event: any) => {
+              console.log('YouTube player ready');
+              setYoutubePlayer(event.target);
+            },
+            onError: (event: any) => {
+              console.error('YouTube player error:', event.data);
+            },
+            onStateChange: (event: any) => {
+              // Track playing state
+              if (event.data === (window as any).YT.PlayerState.PLAYING) {
+                setIsPlaying(true);
+              } else if (event.data === (window as any).YT.PlayerState.PAUSED) {
+                setIsPlaying(false);
+              }
+            },
+          },
+        });
+      } catch (error) {
+        console.error('Failed to initialize YouTube player:', error);
+      }
     };
 
-    return () => {
-      if ((window as any).onYouTubeIframeAPIReady) {
-        delete (window as any).onYouTubeIframeAPIReady;
+    // Check if YouTube API is already loaded
+    if ((window as any).YT && (window as any).YT.Player) {
+      // API already loaded, initialize immediately
+      initializePlayer();
+    } else {
+      // Check if script is already being loaded
+      const existingScript = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
+      if (existingScript) {
+        // Script is loading, wait for it
+        const checkAPI = setInterval(() => {
+          if ((window as any).YT && (window as any).YT.Player) {
+            clearInterval(checkAPI);
+            initializePlayer();
+          }
+        }, 100);
+        
+        // Cleanup interval after 10 seconds
+        setTimeout(() => clearInterval(checkAPI), 10000);
+      } else {
+        // Load the script
+        const tag = document.createElement('script');
+        tag.src = 'https://www.youtube.com/iframe_api';
+        tag.async = true;
+        const firstScriptTag = document.getElementsByTagName('script')[0];
+        if (firstScriptTag && firstScriptTag.parentNode) {
+          firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+        } else {
+          document.head.appendChild(tag);
+        }
+
+        // Set up callback for when API is ready
+        (window as any).onYouTubeIframeAPIReady = () => {
+          console.log('YouTube API ready');
+          scriptLoaded = true;
+          initializePlayer();
+        };
       }
+    }
+
+    return () => {
+      // Cleanup: destroy player if it exists
+      if (player && typeof player.destroy === 'function') {
+        try {
+          player.destroy();
+        } catch (error) {
+          console.error('Error destroying YouTube player:', error);
+        }
+      }
+      // Don't delete onYouTubeIframeAPIReady as it might be used by other components
     };
   }, [videoId]);
 
@@ -89,12 +173,37 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
   const handleJumpToStep = (index: number) => {
     setCurrentStepIndex(index);
     const step = recipe.steps[index];
-    if (step.timestamp && youtubePlayer) {
-      // Parse timestamp (format: "M:SS" or "MM:SS")
-      const parts = step.timestamp.split(':');
-      const seconds = parseInt(parts[0]) * 60 + parseInt(parts[1] || '0');
-      if (seconds > 0) {
-        youtubePlayer.seekTo(seconds, true);
+    if (youtubePlayer) {
+      // If step has a timestamp, seek to it
+      if (step.timestamp) {
+        // Parse timestamp (format: "M:SS" or "MM:SS")
+        const parts = step.timestamp.split(':');
+        const minutes = parseInt(parts[0]) || 0;
+        const seconds = parseInt(parts[1] || '0');
+        const totalSeconds = minutes * 60 + seconds;
+        if (totalSeconds > 0) {
+          try {
+            youtubePlayer.seekTo(totalSeconds, true);
+            // Play the video when jumping to a step
+            if (youtubePlayer.playVideo) {
+              youtubePlayer.playVideo();
+              setIsPlaying(true);
+            }
+          } catch (error) {
+            console.error('Error seeking video:', error);
+          }
+        }
+      } else if (step.timestamp_sec && step.timestamp_sec > 0) {
+        // Use timestamp_sec if available
+        try {
+          youtubePlayer.seekTo(step.timestamp_sec, true);
+          if (youtubePlayer.playVideo) {
+            youtubePlayer.playVideo();
+            setIsPlaying(true);
+          }
+        } catch (error) {
+          console.error('Error seeking video:', error);
+        }
       }
     }
   };
@@ -257,15 +366,24 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
           {/* Video player */}
           <div className="bg-black rounded-xl overflow-hidden aspect-video flex-shrink-0">
             {videoId ? (
-              <div id="youtube-player" className="w-full h-full"></div>
+              <div 
+                ref={playerContainerRef}
+                key={`youtube-player-${videoId}`}
+                className="w-full h-full"
+                style={{ minHeight: '400px' }}
+              ></div>
             ) : (
               <div className="relative w-full h-full flex items-center justify-center">
                 <img
-                  src={recipe.thumbnail}
+                  src={recipe.thumbnail || '/default_recipe.jpg'}
                   alt={recipe.title}
                   className="w-full h-full object-cover"
+                  onError={(e) => {
+                    const target = e.target as HTMLImageElement;
+                    target.src = '/default_recipe.jpg';
+                  }}
                 />
-                <div className="absolute inset-0 flex items-center justify-center">
+                <div className="absolute inset-0 flex items-center justify-center bg-black/50">
                   <p className="text-white">No video available</p>
                 </div>
               </div>

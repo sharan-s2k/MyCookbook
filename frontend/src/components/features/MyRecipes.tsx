@@ -3,6 +3,7 @@ import { Lock, Globe, MoreVertical, ChefHat, Edit, Trash2, BookOpen, Eye, EyeOff
 import type { Recipe, Cookbook } from '../../types';
 import { CookbookSelectModal } from '../modals/CookbookSelectModal';
 import { EditRecipeModal } from '../modals/EditRecipeModal';
+import { getRecipeThumbnail } from '../../utils/images';
 
 interface MyRecipesProps {
   recipes: Recipe[];
@@ -45,14 +46,20 @@ export function MyRecipes({
     })
     .filter(r => {
       if (selectedCookbook === 'all') return true;
-      return r.cookbookIds.includes(selectedCookbook);
+      return (r.cookbookIds || []).includes(selectedCookbook);
     })
     .sort((a, b) => {
-      if (sortBy === 'recent') return b.createdAt.getTime() - a.createdAt.getTime();
+      if (sortBy === 'recent') {
+        const aTime = a.createdAt instanceof Date ? a.createdAt.getTime() : new Date(a.createdAt).getTime();
+        const bTime = b.createdAt instanceof Date ? b.createdAt.getTime() : new Date(b.createdAt).getTime();
+        return bTime - aTime;
+      }
       if (sortBy === 'cooked') {
         if (!a.cookedAt) return 1;
         if (!b.cookedAt) return -1;
-        return b.cookedAt.getTime() - a.cookedAt.getTime();
+        const aTime = a.cookedAt instanceof Date ? a.cookedAt.getTime() : new Date(a.cookedAt).getTime();
+        const bTime = b.cookedAt instanceof Date ? b.cookedAt.getTime() : new Date(b.cookedAt).getTime();
+        return bTime - aTime;
       }
       return a.title.localeCompare(b.title);
     });
@@ -150,9 +157,13 @@ export function MyRecipes({
               >
                 <div className="relative aspect-video">
                   <img
-                    src={recipe.thumbnail}
+                    src={getRecipeThumbnail(recipe.thumbnail, recipe.youtubeUrl || recipe.source_ref)}
                     alt={recipe.title}
                     className="w-full h-full object-cover"
+                    onError={(e) => {
+                      const target = e.target as HTMLImageElement;
+                      target.src = '/default_recipe.jpg';
+                    }}
                   />
                   <div className="absolute top-2 left-2 md:top-3 md:left-3">
                     {recipe.isPublic ? (

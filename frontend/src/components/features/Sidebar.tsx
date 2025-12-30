@@ -60,9 +60,13 @@ export function Sidebar({ collapsed, onToggleCollapse, currentScreen, onNavigate
         {!collapsed ? (
           <div className="flex items-center gap-3 px-2 py-2">
             <img
-              src={currentUser.avatar}
+              src={currentUser.avatar || '/default_profile.png'}
               alt={currentUser.name}
               className="w-10 h-10 rounded-full object-cover"
+              onError={(e) => {
+                const target = e.target as HTMLImageElement;
+                target.src = '/default_profile.png';
+              }}
             />
             <div className="flex-1 min-w-0">
               <div className="text-sm text-gray-900 truncate">{currentUser.name}</div>
@@ -82,9 +86,13 @@ export function Sidebar({ collapsed, onToggleCollapse, currentScreen, onNavigate
             className="w-full flex justify-center"
           >
             <img
-              src={currentUser.avatar}
+              src={currentUser.avatar || '/default_profile.png'}
               alt={currentUser.name}
               className="w-10 h-10 rounded-full object-cover"
+              onError={(e) => {
+                const target = e.target as HTMLImageElement;
+                target.src = '/default_profile.png';
+              }}
             />
           </button>
         )}

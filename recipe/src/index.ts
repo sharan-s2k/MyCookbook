@@ -443,6 +443,184 @@ fastify.get('/:recipe_id', { preHandler: extractUserId }, async (request, reply)
   }
 });
 
+// PATCH /:recipe_id (protected) - Update recipe
+fastify.patch('/:recipe_id', { preHandler: extractUserId }, async (request, reply) => {
+  const userId = (request as any).userId;
+  const { recipe_id } = request.params as { recipe_id: string };
+
+  // Validate UUID format
+  if (!isValidUUID(recipe_id)) {
+    fastify.log.warn({ recipe_id }, 'Invalid recipe id format (not a UUID)');
+    return reply.code(400).send({
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid recipe id format. Recipe id must be a valid UUID.',
+        request_id: request.id,
+      },
+    });
+  }
+
+  const body = request.body as {
+    title?: string;
+    description?: string;
+    is_public?: boolean;
+    ingredients?: any;
+    steps?: any;
+  };
+
+  const client = await pool.connect();
+  try {
+    // First, verify recipe exists and user owns it
+    const checkResult = await client.query(
+      `SELECT owner_id FROM recipes WHERE id = $1`,
+      [recipe_id]
+    );
+
+    if (checkResult.rows.length === 0) {
+      return reply.code(404).send({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Recipe not found',
+          request_id: request.id,
+        },
+      });
+    }
+
+    if (checkResult.rows[0].owner_id !== userId) {
+      return reply.code(403).send({
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Access denied',
+          request_id: request.id,
+        },
+      });
+    }
+
+    // Build update query dynamically based on provided fields
+    const updates: string[] = [];
+    const values: any[] = [];
+    let paramIndex = 1;
+
+    if (body.title !== undefined) {
+      if (!body.title || body.title.trim().length === 0) {
+        return reply.code(400).send({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Title cannot be empty',
+            request_id: request.id,
+          },
+        });
+      }
+      updates.push(`title = $${paramIndex++}`);
+      values.push(body.title.trim());
+    }
+
+    if (body.description !== undefined) {
+      updates.push(`description = $${paramIndex++}`);
+      values.push(body.description || null);
+    }
+
+    if (body.is_public !== undefined) {
+      updates.push(`is_public = $${paramIndex++}`);
+      values.push(body.is_public);
+    }
+
+    if (body.ingredients !== undefined) {
+      if (!Array.isArray(body.ingredients)) {
+        return reply.code(400).send({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Ingredients must be an array',
+            request_id: request.id,
+          },
+        });
+      }
+      // Convert to array of strings if needed (handle frontend format)
+      const ingredientsArray = body.ingredients.map((ing: any) => {
+        if (typeof ing === 'string') {
+          return ing;
+        }
+        // Frontend format: {name: string, amount: string}
+        const amount = ing.amount || '';
+        const name = ing.name || '';
+        return amount ? `${amount} ${name}`.trim() : name;
+      });
+      updates.push(`ingredients = $${paramIndex++}::jsonb`);
+      values.push(JSON.stringify(ingredientsArray));
+    }
+
+    if (body.steps !== undefined) {
+      if (!Array.isArray(body.steps)) {
+        return reply.code(400).send({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Steps must be an array',
+            request_id: request.id,
+          },
+        });
+      }
+      // Convert to backend format: [{index, text, timestamp_sec}]
+      const stepsArray = body.steps.map((step: any, idx: number) => {
+        const index = step.index !== undefined ? step.index : idx + 1;
+        const text = step.text || '';
+        const timestamp_sec = step.timestamp_sec || 0;
+        return { index, text, timestamp_sec };
+      });
+      updates.push(`steps = $${paramIndex++}::jsonb`);
+      values.push(JSON.stringify(stepsArray));
+    }
+
+    if (updates.length === 0) {
+      return reply.code(400).send({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'No fields to update',
+          request_id: request.id,
+        },
+      });
+    }
+
+    // Always update updated_at
+    updates.push(`updated_at = NOW()`);
+    values.push(recipe_id);
+
+    const updateQuery = `
+      UPDATE recipes 
+      SET ${updates.join(', ')} 
+      WHERE id = $${paramIndex}
+      RETURNING id, owner_id, title, description, is_public, source_type, source_ref, status,
+                ingredients, steps, created_at, updated_at
+    `;
+
+    const result = await client.query(updateQuery, values);
+
+    const recipe = result.rows[0];
+    return reply.send({
+      id: recipe.id,
+      title: recipe.title,
+      description: recipe.description,
+      is_public: recipe.is_public,
+      source_type: recipe.source_type,
+      source_ref: recipe.source_ref,
+      ingredients: recipe.ingredients,
+      steps: recipe.steps,
+      created_at: recipe.created_at,
+      updated_at: recipe.updated_at,
+    });
+  } catch (error) {
+    fastify.log.error({ error }, 'Failed to update recipe');
+    return reply.code(500).send({
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to update recipe',
+        request_id: request.id,
+      },
+    });
+  } finally {
+    client.release();
+  }
+});
+
 // Helper: Check if status transition is valid (monotonic state enforcement)
 function isValidStatusTransition(currentStatus: string, newStatus: string): boolean {
   // Terminal states cannot be changed

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Search, ChefHat, Save, User, UserPlus } from 'lucide-react';
 import type { Recipe } from '../../types';
+import { getRecipeThumbnail } from '../../utils/images';
 
 interface SearchScreenProps {
   recipes: Recipe[];
@@ -127,10 +128,14 @@ export function SearchScreen({ recipes, onViewRecipe, onStartCook }: SearchScree
                         className="bg-white border border-gray-200 rounded-xl p-4 flex items-center gap-4 hover:shadow-md transition-shadow"
                       >
                         <img
-                          src={recipe.thumbnail}
+                          src={getRecipeThumbnail(recipe.thumbnail, recipe.youtubeUrl || recipe.source_ref)}
                           alt={recipe.title}
                           className="w-24 h-24 rounded-lg object-cover flex-shrink-0 cursor-pointer"
                           onClick={() => onViewRecipe(recipe)}
+                          onError={(e) => {
+                            const target = e.target as HTMLImageElement;
+                            target.src = '/default_recipe.jpg';
+                          }}
                         />
                         <div
                           className="flex-1 min-w-0 cursor-pointer"
@@ -192,9 +197,13 @@ export function SearchScreen({ recipes, onViewRecipe, onStartCook }: SearchScree
                       className="bg-white border border-gray-200 rounded-xl p-4 flex items-center gap-4 hover:shadow-md transition-shadow"
                     >
                       <img
-                        src={user.avatar}
+                        src={user.avatar || '/default_profile.png'}
                         alt={user.name}
                         className="w-16 h-16 rounded-full object-cover flex-shrink-0"
+                        onError={(e) => {
+                          const target = e.target as HTMLImageElement;
+                          target.src = '/default_profile.png';
+                        }}
                       />
                       <div className="flex-1">
                         <h3 className="text-gray-900 mb-1">{user.name}</h3>

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Edit, Lock, Globe, ChefHat } from 'lucide-react';
 import type { User, Recipe } from '../../types';
+import { getRecipeThumbnail } from '../../utils/images';
 
 interface ProfileProps {
   user: User;
@@ -24,9 +25,13 @@ export function Profile({ user, recipes, onViewRecipe, onStartCook }: ProfilePro
         <div className="bg-white rounded-xl border border-gray-200 p-4 md:p-8 mb-6">
           <div className="flex flex-col sm:flex-row items-start gap-4 md:gap-6">
             <img
-              src={user.avatar}
+              src={user.avatar || '/default_profile.png'}
               alt={user.name}
               className="w-20 h-20 md:w-24 md:h-24 rounded-full object-cover"
+              onError={(e) => {
+                const target = e.target as HTMLImageElement;
+                target.src = '/default_profile.png';
+              }}
             />
             <div className="flex-1">
               <div className="flex items-center justify-between mb-2">
@@ -107,9 +112,13 @@ export function Profile({ user, recipes, onViewRecipe, onStartCook }: ProfilePro
                 >
                   <div className="relative aspect-video">
                     <img
-                      src={recipe.thumbnail}
+                      src={getRecipeThumbnail(recipe.thumbnail, recipe.youtubeUrl || recipe.source_ref)}
                       alt={recipe.title}
                       className="w-full h-full object-cover"
+                      onError={(e) => {
+                        const target = e.target as HTMLImageElement;
+                        target.src = '/default_recipe.jpg';
+                      }}
                     />
                   </div>
 

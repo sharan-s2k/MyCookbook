@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { X, Upload, Camera, Loader, CheckCircle } from 'lucide-react';
 import type { Recipe } from '../../types';
+import { useAppContext } from '../../App';
 
 interface CreateModalProps {
   onClose: () => void;
@@ -21,12 +22,14 @@ interface YouTubePreview {
 
 export function CreateModal({ onClose, onSave, onRecipeCreated }: CreateModalProps) {
   const navigate = useNavigate();
+  const { updateRecipeInStore } = useAppContext();
   const [activeTab, setActiveTab] = useState<CreateTab>('youtube');
   const [step, setStep] = useState<CreateStep>('input');
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [youtubePreview, setYoutubePreview] = useState<YouTubePreview | null>(null);
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
   const [generatingProgress, setGeneratingProgress] = useState('');
+  const [currentRecipeId, setCurrentRecipeId] = useState<string | null>(null);
   const abortControllerRef = React.useRef<AbortController | null>(null);
   const pollTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
   const errorTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
@@ -37,7 +40,7 @@ export function CreateModal({ onClose, onSave, onRecipeCreated }: CreateModalPro
   const [duration, setDuration] = useState('');
   const [cuisine, setCuisine] = useState('');
   const [ingredients, setIngredients] = useState<Array<{ name: string; amount: string }>>([]);
-  const [steps, setSteps] = useState<Array<{ text: string }>>([]);
+  const [steps, setSteps] = useState<Array<{ text: string; timestamp_sec?: number; index?: number }>>([]);
 
   // Extract video ID from YouTube URL
   const extractVideoId = (url: string): string | null => {
@@ -221,16 +224,65 @@ export function CreateModal({ onClose, onSave, onRecipeCreated }: CreateModalPro
             return;
           }
           
-          // Recipe is already saved in backend, navigate to it
-          if (onRecipeCreated) {
-            onRecipeCreated(recipeId);
-          } else {
-            // Fallback: navigate directly
-            navigate(`/recipes/${recipeId}`);
+          // Fetch the recipe data to show in review screen
+          try {
+            const { recipeAPI } = await import('../../api/client');
+            const recipeData = await recipeAPI.getRecipe(recipeId);
+            
+            // Transform backend format to frontend format
+            const transformed: Recipe = {
+              id: recipeData.id,
+              title: recipeData.title,
+              description: recipeData.description || '',
+              isPublic: recipeData.is_public,
+              source_type: recipeData.source_type,
+              source_ref: recipeData.source_ref,
+              youtubeUrl: recipeData.source_type === 'youtube' ? recipeData.source_ref : undefined,
+              ingredients: Array.isArray(recipeData.ingredients)
+                ? recipeData.ingredients.map((ing: string | { name: string; amount: string }) => {
+                    if (typeof ing === 'string') {
+                      const parts = ing.split(/\s+(.+)/);
+                      return {
+                        name: parts[1] || ing,
+                        amount: parts[0] || '',
+                      };
+                    }
+                    return ing;
+                  })
+                : [],
+              steps: recipeData.steps.map((step: any) => ({
+                text: step.text,
+                timestamp: step.timestamp_sec > 0 ? formatTimestamp(step.timestamp_sec) : undefined,
+                timestamp_sec: step.timestamp_sec,
+                index: step.index,
+              })),
+              createdAt: new Date(recipeData.created_at),
+            };
+            
+            // Populate editing fields with recipe data
+            setTitle(transformed.title);
+            setDescription(transformed.description);
+            setIngredients(transformed.ingredients as Array<{ name: string; amount: string }>);
+            setSteps(transformed.steps.map(s => ({ 
+              text: s.text,
+              timestamp_sec: s.timestamp_sec,
+              index: s.index
+            })));
+            setCurrentRecipeId(recipeId);
+            
+            // Switch to editing/review step
+            setStep('editing');
+            setGeneratingProgress('');
+          } catch (error) {
+            console.error('Failed to fetch recipe for review:', error);
+            // Fallback: navigate directly if fetch fails
+            if (onRecipeCreated) {
+              onRecipeCreated(recipeId);
+            } else {
+              navigate(`/recipes/${recipeId}`);
+            }
+            onClose();
           }
-          
-          // Close modal - recipe detail page will load it from backend
-          onClose();
           return;
         } else if (job.status === 'FAILED') {
           // Provide more user-friendly error messages
@@ -294,9 +346,105 @@ export function CreateModal({ onClose, onSave, onRecipeCreated }: CreateModalPro
   };
 
   const handleSave = async () => {
-    // This should not be called for YouTube imports (recipe is auto-saved)
-    // But if called (e.g., for manual recipes), just close
-    onClose();
+    if (!currentRecipeId) {
+      console.error('No recipe ID available for update');
+      return;
+    }
+
+    try {
+      const { recipeAPI } = await import('../../api/client');
+      
+      // Transform frontend format to backend format
+      const backendIngredients = ingredients.map((ing) => {
+        const amount = ing.amount || '';
+        const name = ing.name || '';
+        return amount ? `${amount} ${name}`.trim() : name;
+      });
+
+      const backendSteps = steps.map((step, idx) => {
+        // Preserve timestamp_sec and index from original if available
+        return {
+          index: step.index !== undefined ? step.index : idx + 1,
+          text: step.text || '',
+          timestamp_sec: step.timestamp_sec || 0,
+        };
+      });
+
+      // Call update API
+      // Send description as null if empty string (user cleared it), undefined if not provided
+      const updatePayload: {
+        title: string;
+        description?: string | null;
+        ingredients: string[];
+        steps: any[];
+      } = {
+        title: title.trim(),
+        ingredients: backendIngredients,
+        steps: backendSteps,
+      };
+      
+      // If description field was touched (user edited it), send it (even if empty)
+      // If description is empty string, send null to clear it in backend
+      if (description !== undefined) {
+        updatePayload.description = description.trim() || null;
+      }
+
+      const updatedData = await recipeAPI.updateRecipe(currentRecipeId, updatePayload);
+
+      // Transform backend response to frontend format
+      const formatTimestamp = (seconds: number): string => {
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+      };
+
+      // Transform backend data to frontend format (only fields from backend)
+      const backendFields: Partial<Recipe> = {
+        id: updatedData.id,
+        title: updatedData.title,
+        description: updatedData.description || '',
+        isPublic: updatedData.is_public,
+        source_type: updatedData.source_type,
+        source_ref: updatedData.source_ref,
+        youtubeUrl: updatedData.source_type === 'youtube' ? updatedData.source_ref : undefined,
+        ingredients: Array.isArray(updatedData.ingredients)
+          ? updatedData.ingredients.map((ing: string) => {
+              const parts = ing.split(/\s+(.+)/);
+              return {
+                name: parts[1] || ing,
+                amount: parts[0] || '',
+              };
+            })
+          : [],
+        steps: updatedData.steps.map((step: any) => ({
+          text: step.text,
+          timestamp: step.timestamp_sec > 0 ? formatTimestamp(step.timestamp_sec) : undefined,
+          timestamp_sec: step.timestamp_sec,
+          index: step.index,
+        })),
+        createdAt: new Date(updatedData.created_at),
+      };
+
+      // Update global store - merge with existing recipe if it exists
+      // If recipe doesn't exist in store yet, it will be added on next fetch
+      // For now, we ensure id is present for the update
+      if (backendFields.id) {
+        updateRecipeInStore(backendFields as Partial<Recipe> & { id: string });
+      }
+
+      // Only navigate after successful update
+      if (onRecipeCreated) {
+        onRecipeCreated(currentRecipeId);
+      } else {
+        navigate(`/recipes/${currentRecipeId}`);
+      }
+      onClose();
+    } catch (error: any) {
+      console.error('Failed to update recipe:', error);
+      // Show error message to user
+      setGeneratingProgress(`Error: ${error.message || 'Failed to save recipe. Please try again.'}`);
+      // Don't close modal or navigate on error
+    }
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -476,6 +624,11 @@ export function CreateModal({ onClose, onSave, onRecipeCreated }: CreateModalPro
 
           {step === 'editing' && (
             <div className="max-w-3xl mx-auto space-y-6">
+              <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <p className="text-sm text-blue-800">
+                  <strong>Review your recipe:</strong> Make any changes you'd like before saving. The recipe has been generated from the video and is ready to use.
+                </p>
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm text-gray-700 mb-2">Title</label>

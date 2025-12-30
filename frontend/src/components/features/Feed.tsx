@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Heart, MessageCircle, Share2, ChefHat, Save, UserPlus, UserCheck } from 'lucide-react';
 import type { FeedPost, Recipe } from '../../types';
+import { getRecipeThumbnail } from '../../utils/images';
 
 interface FeedProps {
   posts: FeedPost[];
@@ -70,9 +71,13 @@ export function Feed({ posts, onViewRecipe, onStartCook, onSaveRecipe }: FeedPro
                   <div className="p-4 flex items-center justify-between border-b border-gray-100">
                     <div className="flex items-center gap-3">
                       <img
-                        src={post.recipe.author?.avatar}
+                        src={post.recipe.author?.avatar || '/default_profile.png'}
                         alt={post.recipe.author?.name}
                         className="w-10 h-10 rounded-full object-cover"
+                        onError={(e) => {
+                          const target = e.target as HTMLImageElement;
+                          target.src = '/default_profile.png';
+                        }}
                       />
                       <div>
                         <div className="text-gray-900">{post.recipe.author?.name}</div>
@@ -107,9 +112,13 @@ export function Feed({ posts, onViewRecipe, onStartCook, onSaveRecipe }: FeedPro
                     className="cursor-pointer"
                   >
                     <img
-                      src={post.recipe.thumbnail}
+                      src={getRecipeThumbnail(post.recipe.thumbnail, post.recipe.youtubeUrl || post.recipe.source_ref)}
                       alt={post.recipe.title}
                       className="w-full aspect-video object-cover"
+                      onError={(e) => {
+                        const target = e.target as HTMLImageElement;
+                        target.src = '/default_recipe.jpg';
+                      }}
                     />
                     <div className="p-4">
                       <h3 className="text-gray-900 mb-2">{post.recipe.title}</h3>
@@ -218,9 +227,13 @@ export function Feed({ posts, onViewRecipe, onStartCook, onSaveRecipe }: FeedPro
                   <div key={user.id} className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <img
-                        src={user.avatar}
+                        src={user.avatar || '/default_profile.png'}
                         alt={user.name}
                         className="w-10 h-10 rounded-full object-cover"
+                        onError={(e) => {
+                          const target = e.target as HTMLImageElement;
+                          target.src = '/default_profile.png';
+                        }}
                       />
                       <div>
                         <div className="text-sm text-gray-900">{user.name}</div>

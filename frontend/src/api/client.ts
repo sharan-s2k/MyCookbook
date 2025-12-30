@@ -308,6 +308,32 @@ export const recipeAPI = {
 
     return response.json();
   },
+
+  async updateRecipe(recipeId: string, updates: {
+    title?: string;
+    description?: string | null;
+    is_public?: boolean;
+    ingredients?: any;
+    steps?: any;
+  }) {
+    const response = await fetchWithAuth(`/recipes/${recipeId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    });
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to update recipe';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
 };
 
 // User API
