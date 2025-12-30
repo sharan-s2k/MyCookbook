@@ -11,16 +11,49 @@ const USER_URL = process.env.USER_URL!;
 const RECIPE_URL = process.env.RECIPE_URL!;
 const JWT_SECRET = process.env.JWT_PUBLIC_OR_SHARED_SECRET!;
 const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || process.env.SERVICE_TOKEN || JWT_SECRET; // Gateway token for internal services
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:3000';
+const GATEWAY_UPSTREAM_TIMEOUT_MS = parseInt(process.env.GATEWAY_UPSTREAM_TIMEOUT_MS || '5000', 10);
+const CORS_MAX_AGE_SECONDS = parseInt(process.env.CORS_MAX_AGE_SECONDS || '600', 10);
 
-const fastify = Fastify({ logger: true });
+// Note: @fastify/http-proxy manages upstream connections internally
+
+// Simple "reject fast" concurrency counters (no queueing to avoid unbounded memory)
+// Queueing removed: unbounded waitQueue can grow without limit under load
+const MAX_CREATE = 10;
+const MAX_STATUS = 50;
+let activeCreate = 0;
+let activeStatus = 0;
+
+const fastify = Fastify({ 
+  logger: true,
+  // Use Fastify's built-in requestTimeout to safely abort upstream requests
+  // This aborts the request/connection instead of racing with proxy response streaming
+  requestTimeout: GATEWAY_UPSTREAM_TIMEOUT_MS,
+  connectionTimeout: GATEWAY_UPSTREAM_TIMEOUT_MS,
+});
 
 fastify.register(cors, {
   origin: FRONTEND_ORIGIN,
   credentials: true,
+  maxAge: CORS_MAX_AGE_SECONDS,
 });
 
 fastify.register(cookie);
+
+// Timeout handler: send 504 if no response sent yet, otherwise destroy socket
+fastify.addHook('onTimeout', (request, reply) => {
+  if (reply.sent || reply.raw.headersSent) {
+    reply.raw.destroy();
+    return;
+  }
+  reply.code(504).send({
+    error: {
+      code: 'UPSTREAM_TIMEOUT',
+      message: 'Upstream request timed out',
+      request_id: (request as any).requestId || 'unknown',
+    },
+  });
+});
 
 // Middleware: Generate correlation ID
 fastify.addHook('onRequest', async (request, reply) => {
@@ -82,6 +115,10 @@ fastify.get('/health', async (request) => {
 });
 
 // Auth routes (no JWT required)
+fastify.register(
+  async function (fastify) {
+    // Note: Upstream timeout is handled by Fastify's requestTimeout + onTimeout handler
+    // This is safe because Fastify ensures timeout handler only runs if proxy hasn't sent response
 fastify.register(httpProxy, {
   upstream: AUTH_URL,
   prefix: '/api/auth',
@@ -103,11 +140,14 @@ fastify.register(httpProxy, {
     // We don't need onResponse callback - it was interfering with response forwarding
   },
 });
+  }
+);
 
 // User routes (protected)
 fastify.register(
   async function (fastify) {
     fastify.addHook('preHandler', verifyJWT);
+    // Note: Upstream timeout is handled by Fastify's requestTimeout + onTimeout handler
     fastify.register(httpProxy, {
       upstream: USER_URL,
       prefix: '/api/users',
@@ -136,6 +176,64 @@ fastify.register(
 fastify.register(
   async function (fastify) {
     fastify.addHook('preHandler', verifyJWT);
+    
+    // Concurrency limit for import job creation (reject fast, no queueing)
+    fastify.addHook('preHandler', async (request, reply) => {
+      if (request.url.includes('/import/youtube') && request.method === 'POST') {
+        if (activeCreate >= MAX_CREATE) {
+          return reply.code(503).send({
+            error: {
+              code: 'OVERLOADED',
+              message: 'Too many concurrent requests',
+              request_id: (request as any).requestId || 'unknown',
+            },
+          });
+        }
+        activeCreate++;
+        let released = false;
+        const release = () => {
+          if (!released) {
+            released = true;
+            activeCreate--;
+          }
+        };
+        reply.raw.once('finish', release);
+        reply.raw.once('close', release);
+        reply.raw.once('error', release);
+        request.raw.once('aborted', release);
+        request.raw.socket?.once('close', release);
+      }
+    });
+
+    // Concurrency limit for import job status checks (reject fast, no queueing)
+    fastify.addHook('preHandler', async (request, reply) => {
+      if (request.url.match(/\/import-jobs\/[^\/]+$/) && request.method === 'GET') {
+        if (activeStatus >= MAX_STATUS) {
+          return reply.code(503).send({
+            error: {
+              code: 'OVERLOADED',
+              message: 'Too many concurrent requests',
+              request_id: (request as any).requestId || 'unknown',
+            },
+          });
+        }
+        activeStatus++;
+        let released = false;
+        const release = () => {
+          if (!released) {
+            released = true;
+            activeStatus--;
+          }
+        };
+        reply.raw.once('finish', release);
+        reply.raw.once('close', release);
+        reply.raw.once('error', release);
+        request.raw.once('aborted', release);
+        request.raw.socket?.once('close', release);
+      }
+    });
+
+    // Note: Upstream timeout is handled by Fastify's requestTimeout + onTimeout handler
     fastify.register(httpProxy, {
       upstream: RECIPE_URL,
       prefix: '/api/recipes',
@@ -148,6 +246,12 @@ fastify.register(
           delete cleanHeaders['x-user-id'];
           delete cleanHeaders['x-gateway-token'];
           
+          // Forward If-None-Match for ETag support
+          const ifNoneMatch = (originalReq as any).headers['if-none-match'];
+          if (ifNoneMatch) {
+            cleanHeaders['if-none-match'] = ifNoneMatch;
+          }
+          
           return {
             ...cleanHeaders,
             'x-request-id': (originalReq as any).requestId || uuidv4(),
@@ -155,6 +259,7 @@ fastify.register(
             'x-gateway-token': GATEWAY_TOKEN,
           };
         },
+        // @fastify/http-proxy automatically forwards all response headers including ETag, Retry-After, Cache-Control
       },
     });
   }

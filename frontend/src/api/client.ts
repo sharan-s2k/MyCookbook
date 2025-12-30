@@ -254,15 +254,41 @@ export const recipeAPI = {
     return response.json();
   },
 
-  async getImportJob(jobId: string) {
-    const response = await fetchWithAuth(`/recipes/import-jobs/${jobId}`);
+  async getImportJob(jobId: string, etag?: string) {
+    const headers: HeadersInit = {};
+    if (etag) {
+      headers['If-None-Match'] = etag;
+    }
+
+    const response = await fetchWithAuth(`/recipes/import-jobs/${jobId}`, {
+      headers,
+    });
+
+    // Extract headers before checking status (headers available on 304)
+    const responseEtag = response.headers.get('ETag');
+    const retryAfter = response.headers.get('Retry-After');
+
+    // Handle 304 Not Modified (no change)
+    if (response.status === 304) {
+      return {
+        unchanged: true,
+        _etag: responseEtag || undefined,
+        _retryAfter: retryAfter ? parseInt(retryAfter, 10) : undefined,
+      };
+    }
 
     if (!response.ok) {
       const error = await response.json();
       throw new Error(error.error?.message || 'Failed to get job status');
     }
 
-    return response.json();
+    const data = await response.json();
+    
+    return {
+      ...data,
+      _etag: responseEtag || undefined,
+      _retryAfter: retryAfter ? parseInt(retryAfter, 10) : undefined,
+    };
   },
 
   async getRecipe(recipeId: string) {

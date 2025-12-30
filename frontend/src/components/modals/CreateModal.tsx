@@ -28,6 +28,8 @@ export function CreateModal({ onClose, onSave, onRecipeCreated }: CreateModalPro
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
   const [generatingProgress, setGeneratingProgress] = useState('');
   const abortControllerRef = React.useRef<AbortController | null>(null);
+  const pollTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+  const errorTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
   
   // Editing fields
   const [title, setTitle] = useState('');
@@ -113,6 +115,12 @@ export function CreateModal({ onClose, onSave, onRecipeCreated }: CreateModalPro
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
+      if (pollTimeoutRef.current) {
+        clearTimeout(pollTimeoutRef.current);
+      }
+      if (errorTimeoutRef.current) {
+        clearTimeout(errorTimeoutRef.current);
+      }
     };
   }, []);
 
@@ -123,6 +131,14 @@ export function CreateModal({ onClose, onSave, onRecipeCreated }: CreateModalPro
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
+    if (pollTimeoutRef.current) {
+      clearTimeout(pollTimeoutRef.current);
+      pollTimeoutRef.current = null;
+    }
+    if (errorTimeoutRef.current) {
+      clearTimeout(errorTimeoutRef.current);
+      errorTimeoutRef.current = null;
+    }
     abortControllerRef.current = new AbortController();
 
     setStep('generating');
@@ -132,31 +148,71 @@ export function CreateModal({ onClose, onSave, onRecipeCreated }: CreateModalPro
       const { recipeAPI } = await import('../../api/client');
       const { job_id } = await recipeAPI.createYoutubeImport(youtubeUrl);
 
-      // Poll for job completion
-      const pollInterval = 2000; // 2 seconds
-      const maxAttempts = 60; // 2 minutes max
+      // Poll for job completion with ETag, Retry-After, exponential backoff, and jitter
+      const maxAttempts = 120; // 4 minutes max (with exponential backoff)
       let attempts = 0;
+      let currentEtag: string | undefined = undefined;
+      let baseDelay = 1000; // Start with 1 second
+      let pollInFlight = false; // Prevent overlapping poll requests
 
       const pollJob = async (): Promise<void> => {
-        // Check if aborted
-        if (abortControllerRef.current?.signal.aborted) {
+        // Prevent overlapping requests
+        if (pollInFlight) {
+          return;
+        }
+        pollInFlight = true;
+        try {
+          // Check if aborted
+          if (abortControllerRef.current?.signal.aborted) {
+            return;
+          }
+
+          attempts++;
+          if (attempts > maxAttempts) {
+            throw new Error('Import timed out');
+          }
+
+          const jobResult = await recipeAPI.getImportJob(job_id, currentEtag);
+          
+          // Check if aborted after async call
+          if (abortControllerRef.current?.signal.aborted) {
+            return;
+          }
+
+        // Handle 304 Not Modified (no change)
+        if ((jobResult as any).unchanged) {
+          // Update ETag even on 304 (preserve for next request)
+          if ((jobResult as any)._etag) {
+            currentEtag = (jobResult as any)._etag;
+          }
+          
+          // No change, use Retry-After or continue with current delay
+          const retryAfter = (jobResult as any)._retryAfter;
+          const delay = retryAfter ? retryAfter * 1000 : baseDelay;
+          // Cap delay at 5s unless server says otherwise
+          const cappedDelay = retryAfter ? Math.min(10000, delay) : Math.min(5000, delay);
+          // Add jitter (±15%)
+          const jitter = cappedDelay * 0.15 * (Math.random() * 2 - 1);
+          const nextDelay = Math.max(500, cappedDelay + jitter);
+          
+          pollTimeoutRef.current = setTimeout(() => {
+            pollTimeoutRef.current = null;
+            if (!abortControllerRef.current?.signal.aborted) {
+              pollJob();
+            }
+          }, nextDelay);
           return;
         }
 
-        attempts++;
-        if (attempts > maxAttempts) {
-          throw new Error('Import timed out after 2 minutes');
+        // Update ETag for next request
+        if ((jobResult as any)._etag) {
+          currentEtag = (jobResult as any)._etag;
         }
 
-        const job = await recipeAPI.getImportJob(job_id);
-        
-        // Check if aborted after async call
-        if (abortControllerRef.current?.signal.aborted) {
-          return;
-        }
-
+        const job = jobResult as any;
         setGeneratingProgress(`Processing... (${job.status})`);
 
+        // Terminal states
         if (job.status === 'READY' && job.recipe_id) {
           const recipeId = job.recipe_id;
           console.log('Import job completed successfully, recipe_id:', recipeId);
@@ -175,6 +231,7 @@ export function CreateModal({ onClose, onSave, onRecipeCreated }: CreateModalPro
           
           // Close modal - recipe detail page will load it from backend
           onClose();
+          return;
         } else if (job.status === 'FAILED') {
           // Provide more user-friendly error messages
           let errorMessage = job.error_message || 'Import failed';
@@ -184,13 +241,32 @@ export function CreateModal({ onClose, onSave, onRecipeCreated }: CreateModalPro
             errorMessage = 'Invalid YouTube URL. Please check the link and try again.';
           }
           throw new Error(errorMessage);
+        }
+
+        // Continue polling with Retry-After or exponential backoff
+        let delay: number;
+        if (job._retryAfter) {
+          // Use server-suggested Retry-After (cap at 10s for safety)
+          delay = Math.min(10000, job._retryAfter * 1000);
         } else {
-          // Continue polling
-          setTimeout(() => {
-            if (!abortControllerRef.current?.signal.aborted) {
-              pollJob();
-            }
-          }, pollInterval);
+          // Exponential backoff: 1s -> 1.5s -> 2.25s -> 3.4s -> 5s (cap at 5s)
+          delay = Math.min(5000, baseDelay * Math.pow(1.5, attempts - 1));
+          baseDelay = delay; // Update base for next iteration
+        }
+        
+        // Add jitter (±15%)
+        const jitter = delay * 0.15 * (Math.random() * 2 - 1);
+        const nextDelay = Math.max(500, delay + jitter);
+        
+        pollTimeoutRef.current = setTimeout(() => {
+          pollTimeoutRef.current = null;
+          if (!abortControllerRef.current?.signal.aborted) {
+            pollJob();
+          }
+        }, nextDelay);
+        } finally {
+          // Always reset pollInFlight, even on errors
+          pollInFlight = false;
         }
       };
 
@@ -201,7 +277,8 @@ export function CreateModal({ onClose, onSave, onRecipeCreated }: CreateModalPro
         return;
       }
       setGeneratingProgress(`Error: ${error.message}`);
-      setTimeout(() => {
+      errorTimeoutRef.current = setTimeout(() => {
+        errorTimeoutRef.current = null;
         if (!abortControllerRef.current?.signal.aborted) {
           setStep('input');
           setGeneratingProgress('');

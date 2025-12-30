@@ -14,13 +14,26 @@ const KAFKA_TOPIC_JOBS = process.env.KAFKA_TOPIC_JOBS!;
 const RECIPE_INTERNAL_URL = process.env.RECIPE_INTERNAL_URL!;
 const AI_ORCHESTRATOR_URL = process.env.AI_ORCHESTRATOR_URL!;
 const SERVICE_TOKEN = process.env.SERVICE_TOKEN!;
+const WORKER_CONCURRENCY = parseInt(process.env.WORKER_CONCURRENCY || '4', 10);
 
 const kafka = new Kafka({
   brokers: KAFKA_BROKERS,
   clientId: 'recipe-workers',
 });
 
-const consumer = kafka.consumer({ groupId: 'recipe-workers-group' });
+const consumer = kafka.consumer({ 
+  groupId: 'recipe-workers-group',
+  sessionTimeout: 30000, // 30s
+  heartbeatInterval: 3000, // 3s
+  maxBytesPerPartition: 1048576, // 1MB
+  maxWaitTimeInMs: 5000, // 5s
+  retry: {
+    retries: 8,
+    initialRetryTime: 100,
+    multiplier: 2,
+    maxRetryTime: 30000,
+  },
+});
 
 // Health check server
 const fastify = Fastify({ logger: true });
@@ -242,33 +255,62 @@ async function fetchTranscript(url: string, jobId: string): Promise<{ transcript
   }
 }
 
-// Update job status
+// Retry helper with exponential backoff and jitter
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = 3,
+  baseDelayMs: number = 1000,
+  label: string = 'operation'
+): Promise<T> {
+  let lastError: Error;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      lastError = error;
+      if (attempt === maxRetries) {
+        break;
+      }
+      // Exponential backoff with jitter (±20%)
+      const delay = baseDelayMs * Math.pow(2, attempt);
+      const jitter = delay * 0.2 * (Math.random() * 2 - 1); // ±20%
+      const backoffMs = Math.max(100, delay + jitter);
+      console.log(`${label} failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying in ${backoffMs.toFixed(0)}ms:`, error.message);
+      await new Promise(resolve => setTimeout(resolve, backoffMs));
+    }
+  }
+  throw lastError!;
+}
+
+// Update job status (with retry)
 async function updateJobStatus(
   jobId: string,
   status: 'RUNNING' | 'FAILED' | 'READY',
   errorMessage?: string,
   recipeId?: string
 ) {
-  const response = await fetch(`${RECIPE_INTERNAL_URL}/internal/import-jobs/${jobId}/status`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-service-token': SERVICE_TOKEN,
-    },
-    body: JSON.stringify({
-      status,
-      error_message: errorMessage,
-      recipe_id: recipeId,
-    }),
-  });
+  await retryWithBackoff(async () => {
+    const response = await fetch(`${RECIPE_INTERNAL_URL}/internal/import-jobs/${jobId}/status`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-service-token': SERVICE_TOKEN,
+      },
+      body: JSON.stringify({
+        status,
+        error_message: errorMessage,
+        recipe_id: recipeId,
+      }),
+    });
 
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Failed to update job status: ${error}`);
-  }
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Failed to update job status: ${error}`);
+    }
+  }, 3, 500, `updateJobStatus(${jobId})`);
 }
 
-// Create recipe from import job
+// Create recipe from import job (with retry)
 async function createRecipeFromJob(
   jobId: string,
   ownerId: string,
@@ -279,31 +321,33 @@ async function createRecipeFromJob(
   steps: Array<{ index: number; text: string; timestamp_sec: number }>,
   rawTranscript: string
 ) {
-  const response = await fetch(`${RECIPE_INTERNAL_URL}/internal/recipes/from-import-job`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-service-token': SERVICE_TOKEN,
-    },
-    body: JSON.stringify({
-      job_id: jobId,
-      owner_id: ownerId,
-      source_ref: sourceRef,
-      title,
-      description,
-      ingredients,
-      steps,
-      raw_transcript: rawTranscript,
-    }),
-  });
+  return await retryWithBackoff(async () => {
+    const response = await fetch(`${RECIPE_INTERNAL_URL}/internal/recipes/from-import-job`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-service-token': SERVICE_TOKEN,
+      },
+      body: JSON.stringify({
+        job_id: jobId,
+        owner_id: ownerId,
+        source_ref: sourceRef,
+        title,
+        description,
+        ingredients,
+        steps,
+        raw_transcript: rawTranscript,
+      }),
+    });
 
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Failed to create recipe: ${error}`);
-  }
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Failed to create recipe: ${error}`);
+    }
 
-  const result = await response.json();
-  return result.recipe_id;
+    const result = await response.json();
+    return result.recipe_id;
+  }, 3, 1000, `createRecipeFromJob(${jobId})`);
 }
 
 // Call AI orchestrator
@@ -332,6 +376,26 @@ async function extractRecipe(sourceRef: string, transcript: string) {
   return await response.json();
 }
 
+// Check if job is in terminal state (best-effort to avoid wasted work)
+async function checkJobStatus(jobId: string): Promise<string | null> {
+  try {
+    const response = await fetch(`${RECIPE_INTERNAL_URL}/internal/import-jobs/${jobId}`, {
+      method: 'GET',
+      headers: {
+        'x-service-token': SERVICE_TOKEN,
+      },
+    });
+    if (response.ok) {
+      const job = await response.json();
+      return job.status; // Return status if we can fetch it
+    }
+  } catch (error) {
+    // If check fails, proceed with processing (non-blocking)
+    console.warn(`Could not check job status for ${jobId}, proceeding anyway:`, error);
+  }
+  return null;
+}
+
 // Process a single job
 async function processJob(message: any) {
   const { job_id, owner_id, source_type, url } = message;
@@ -339,6 +403,13 @@ async function processJob(message: any) {
   console.log(`Processing job ${job_id} for URL: ${url}`);
 
   try {
+    // Check if job is already terminal (best-effort check to avoid wasted work)
+    const currentStatus = await checkJobStatus(job_id);
+    if (currentStatus === 'READY' || currentStatus === 'FAILED') {
+      console.log(`Job ${job_id} is already in terminal state (${currentStatus}), skipping`);
+      return;
+    }
+
     // Update status to RUNNING
     await updateJobStatus(job_id, 'RUNNING');
 
@@ -372,22 +443,13 @@ async function processJob(message: any) {
       return;
     }
 
-    // Extract recipe using AI
-    let recipeData: any;
-    let retries = 2;
-    while (retries >= 0) {
-      try {
-        recipeData = await extractRecipe(url, transcript);
-        break;
-      } catch (error: any) {
-        if (retries === 0) {
-          throw error;
-        }
-        console.log(`AI extraction failed, retrying... (${retries} retries left)`);
-        retries--;
-        await new Promise((resolve) => setTimeout(resolve, 2000)); // Wait 2s before retry
-      }
-    }
+    // Extract recipe using AI (with exponential backoff retry)
+    const recipeData = await retryWithBackoff(
+      () => extractRecipe(url, transcript),
+      2, // 2 retries = 3 total attempts
+      2000, // Start with 2s delay
+      `extractRecipe(${job_id})`
+    );
 
     // Validate AI response
     if (!recipeData.title || !recipeData.ingredients || !recipeData.steps) {
@@ -415,6 +477,9 @@ async function processJob(message: any) {
     await updateJobStatus(job_id, 'FAILED', error.message || 'Unknown error');
   }
 }
+
+// WORKER_CONCURRENCY: reserved for future eachBatch bounded concurrency or horizontal scaling
+// With kafkajs eachMessage, throughput is primarily controlled by partitions/replicas
 
 // Main worker loop
 async function runWorker() {

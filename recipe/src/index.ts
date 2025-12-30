@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import { Pool } from 'pg';
 import { Kafka, Partitioners } from 'kafkajs';
 import { v4 as uuidv4 } from 'uuid';
+import { createHash } from 'crypto';
 
 const PORT = parseInt(process.env.PORT || '8003', 10);
 const DATABASE_URL = process.env.DATABASE_URL!;
@@ -26,7 +27,10 @@ const producer = kafka.producer({
   createPartitioner: Partitioners.LegacyPartitioner, // Explicitly set to avoid deprecation warning
 });
 
-const fastify = Fastify({ logger: true });
+const fastify = Fastify({ 
+  logger: true,
+  bodyLimit: 10 * 1024 * 1024, // 10MB limit for transcript uploads
+});
 
 fastify.register(cors, {
   origin: true,
@@ -161,6 +165,55 @@ fastify.post('/import/youtube', { preHandler: extractUserId }, async (request, r
   }
 });
 
+// Helper: Compute ETag from job data (safe date handling)
+function computeJobETag(job: any): string {
+  // Use stable fields: id, status, updated_at, recipe_id
+  // Handle updated_at safely: may be Date, string, or null
+  let updatedAtMs: number | string = 0;
+  if (job.updated_at) {
+    try {
+      const date = new Date(job.updated_at);
+      const ms = date.getTime();
+      updatedAtMs = isNaN(ms) ? String(job.updated_at) : ms;
+    } catch {
+      updatedAtMs = String(job.updated_at);
+    }
+  }
+  
+  const stableData = `${job.id}|${job.status}|${updatedAtMs}|${job.recipe_id || ''}`;
+  return `"${createHash('sha256').update(stableData).digest('hex').substring(0, 16)}"`;
+}
+
+// Helper: Get Retry-After value based on job status
+function getRetryAfterForStatus(status: string, updatedAt: string | Date | null | undefined): number | null {
+  const terminalStates = ['READY', 'FAILED'];
+  if (terminalStates.includes(status)) {
+    return null; // No retry needed for terminal states
+  }
+
+  // Determine if job is long-running (more than 30 seconds old)
+  // Normalize updatedAt: handle string, Date, null, undefined safely
+  let isLongRunning = false;
+  if (updatedAt) {
+    try {
+      const date = updatedAt instanceof Date ? updatedAt : new Date(updatedAt);
+      const ms = date.getTime();
+      if (!isNaN(ms)) {
+        isLongRunning = (Date.now() - ms) > 30000;
+      }
+    } catch {
+      // Invalid date, treat as not long-running
+    }
+  }
+
+  if (status === 'QUEUED') {
+    return 1; // Check quickly when queued
+  } else if (status === 'RUNNING') {
+    return isLongRunning ? 5 : 3; // Slower if already running for a while
+  }
+  return 2; // Default for unknown states
+}
+
 // GET /import-jobs/:job_id (protected)
 fastify.get('/import-jobs/:job_id', { preHandler: extractUserId }, async (request, reply) => {
   const userId = (request as any).userId;
@@ -197,14 +250,59 @@ fastify.get('/import-jobs/:job_id', { preHandler: extractUserId }, async (reques
       });
     }
 
-    return reply.send({
+    const jobResponse = {
       job_id: job.id,
       status: job.status,
       recipe_id: job.recipe_id,
       error_message: job.error_message,
       created_at: job.created_at,
       updated_at: job.updated_at,
-    });
+    };
+
+    // Compute ETag (with safe error handling)
+    let etag: string;
+    try {
+      etag = computeJobETag(job);
+    } catch (error) {
+      fastify.log.warn({ error, job_id }, 'Failed to compute ETag, proceeding without caching');
+      // Continue without ETag on error (non-fatal)
+      return reply.send(jobResponse);
+    }
+
+    // Check If-None-Match header
+    const ifNoneMatch = request.headers['if-none-match'];
+    if (ifNoneMatch && ifNoneMatch === etag) {
+      // No change, return 304
+      try {
+        const retryAfter = getRetryAfterForStatus(job.status, job.updated_at);
+        reply.header('ETag', etag);
+        reply.header('Cache-Control', 'private, max-age=0, must-revalidate');
+        if (retryAfter !== null) {
+          reply.header('Retry-After', retryAfter.toString());
+        }
+        return reply.code(304).send();
+      } catch (error) {
+        fastify.log.warn({ error, job_id }, 'Error setting 304 headers, returning 200');
+        // Fall through to return 200 with data
+      }
+    }
+
+    // Set caching headers
+    reply.header('ETag', etag);
+    reply.header('Cache-Control', 'private, max-age=0, must-revalidate');
+    
+    // Set Retry-After for non-terminal jobs
+    try {
+      const retryAfter = getRetryAfterForStatus(job.status, job.updated_at);
+      if (retryAfter !== null) {
+        reply.header('Retry-After', retryAfter.toString());
+      }
+    } catch (error) {
+      // Non-fatal: continue without Retry-After
+      fastify.log.warn({ error, job_id }, 'Error computing Retry-After');
+    }
+
+    return reply.send(jobResponse);
   } catch (error) {
     fastify.log.error({ error }, 'Failed to get import job');
     return reply.code(500).send({
@@ -345,6 +443,71 @@ fastify.get('/:recipe_id', { preHandler: extractUserId }, async (request, reply)
   }
 });
 
+// Helper: Check if status transition is valid (monotonic state enforcement)
+function isValidStatusTransition(currentStatus: string, newStatus: string): boolean {
+  // Terminal states cannot be changed
+  if (currentStatus === 'READY' || currentStatus === 'FAILED') {
+    return false;
+  }
+
+  // Valid transitions:
+  // QUEUED -> RUNNING, FAILED (if error occurs immediately)
+  // RUNNING -> READY, FAILED
+  const validTransitions: Record<string, string[]> = {
+    'QUEUED': ['RUNNING', 'FAILED'],
+    'RUNNING': ['READY', 'FAILED'],
+  };
+
+  return validTransitions[currentStatus]?.includes(newStatus) || false;
+}
+
+// GET /internal/import-jobs/:job_id (internal) - for terminal state check
+fastify.get(
+  '/internal/import-jobs/:job_id',
+  { preHandler: verifyServiceToken },
+  async (request, reply) => {
+    const { job_id } = request.params as { job_id: string };
+
+    const client = await pool.connect();
+    try {
+      const result = await client.query(
+        `SELECT id, status, recipe_id, updated_at
+         FROM recipe_import_jobs WHERE id = $1`,
+        [job_id]
+      );
+
+      if (result.rows.length === 0) {
+        return reply.code(404).send({
+          error: {
+            code: 'NOT_FOUND',
+            message: 'Import job not found',
+            request_id: request.id,
+          },
+        });
+      }
+
+      const job = result.rows[0];
+      return reply.send({
+        job_id: job.id,
+        status: job.status,
+        recipe_id: job.recipe_id,
+        updated_at: job.updated_at,
+      });
+    } catch (error) {
+      fastify.log.error({ error, job_id }, 'Failed to get internal import job status');
+      return reply.code(500).send({
+        error: {
+          code: 'INTERNAL_ERROR',
+          message: 'Failed to get job status',
+          request_id: request.id,
+        },
+      });
+    } finally {
+      client.release();
+    }
+  }
+);
+
 // POST /internal/import-jobs/:job_id/status (internal)
 fastify.post(
   '/internal/import-jobs/:job_id/status',
@@ -369,6 +532,51 @@ fastify.post(
 
     const client = await pool.connect();
     try {
+      await client.query('BEGIN');
+
+      // Fetch current job state
+      const currentJob = await client.query(
+        `SELECT id, status, recipe_id FROM recipe_import_jobs WHERE id = $1`,
+        [job_id]
+      );
+
+      if (currentJob.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return reply.code(404).send({
+          error: {
+            code: 'NOT_FOUND',
+            message: 'Import job not found',
+            request_id: request.id,
+          },
+        });
+      }
+
+      const current = currentJob.rows[0];
+
+      // Idempotency: If already in the target state with same recipe_id, return success
+      if (current.status === status) {
+        if (status === 'READY' && recipe_id) {
+          // For READY status, check if recipe_id matches (idempotent completion)
+          if (current.recipe_id === recipe_id) {
+            await client.query('ROLLBACK');
+            return reply.send({ success: true, already_complete: true });
+          }
+        } else if (status === 'FAILED' || status === 'RUNNING') {
+          // For FAILED/RUNNING, duplicate updates are idempotent
+          await client.query('ROLLBACK');
+          return reply.send({ success: true, already_set: true });
+        }
+      }
+
+      // Enforce monotonic state transitions (prevent state regression)
+      if (!isValidStatusTransition(current.status, status)) {
+        await client.query('ROLLBACK');
+        fastify.log.warn({ job_id, current_status: current.status, attempted_status: status }, 'Invalid status transition attempted');
+        // Still return success for idempotency (client may retry with same status)
+        return reply.send({ success: true, skipped: true, reason: 'invalid_transition' });
+      }
+
+      // Build update query
       const updates: string[] = ['status = $1', 'updated_at = NOW()'];
       const values: any[] = [status];
       let paramIndex = 2;
@@ -384,24 +592,16 @@ fastify.post(
 
       values.push(job_id);
 
-      const result = await client.query(
+      await client.query(
         `UPDATE recipe_import_jobs SET ${updates.join(', ')} WHERE id = $${paramIndex}`,
         values
       );
 
-      if (result.rowCount === 0) {
-        return reply.code(404).send({
-          error: {
-            code: 'NOT_FOUND',
-            message: 'Import job not found',
-            request_id: request.id,
-          },
-        });
-      }
-
+      await client.query('COMMIT');
       return reply.send({ success: true });
     } catch (error) {
-      fastify.log.error({ error }, 'Failed to update job status');
+      await client.query('ROLLBACK');
+      fastify.log.error({ error, job_id }, 'Failed to update job status');
       return reply.code(500).send({
         error: {
           code: 'INTERNAL_ERROR',
@@ -418,7 +618,13 @@ fastify.post(
 // POST /internal/import-jobs/:job_id/transcript (internal)
 fastify.post(
   '/internal/import-jobs/:job_id/transcript',
-  { preHandler: verifyServiceToken },
+  { 
+    preHandler: verifyServiceToken,
+    // Additional body size validation for this endpoint (already limited globally)
+    config: {
+      bodyLimit: 10 * 1024 * 1024, // 10MB
+    },
+  },
   async (request, reply) => {
     const { job_id } = request.params as { job_id: string };
     const { provider, lang, segments, transcript_text } = request.body as {
