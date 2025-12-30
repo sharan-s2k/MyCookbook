@@ -17,4 +17,4 @@ RUN npm run build || true
 
 EXPOSE 8005
 
-CMD ["sh", "-c", "npm start || npm run dev"]
+CMD ["sh", "-c", "[ -f dist/index.js ] && npm start || npm run dev"]

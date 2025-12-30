@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { Pool } from 'pg';
-import { Kafka } from 'kafkajs';
+import { Kafka, Partitioners } from 'kafkajs';
 import { v4 as uuidv4 } from 'uuid';
 
 const PORT = parseInt(process.env.PORT || '8003', 10);
@@ -22,7 +22,9 @@ const kafka = new Kafka({
   clientId: 'recipe-service',
 });
 
-const producer = kafka.producer();
+const producer = kafka.producer({
+  createPartitioner: Partitioners.LegacyPartitioner, // Explicitly set to avoid deprecation warning
+});
 
 const fastify = Fastify({ logger: true });
 

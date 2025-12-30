@@ -10,5 +10,5 @@ RUN npm run build || true
 
 EXPOSE 8003
 
-CMD ["sh", "-c", "npm run migrate && (npm start || npm run dev)"]
+CMD ["sh", "-c", "npm run migrate && ([ -f dist/index.js ] && npm start || npm run dev)"]
 
