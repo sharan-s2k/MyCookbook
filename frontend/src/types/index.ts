@@ -12,7 +12,7 @@ export type Recipe = {
   source_ref?: string;
   source_type?: string;
   description: string;
-  ingredients: { name: string; amount: string; checked?: boolean }[] | string[];
+  ingredients: { qty: string; unit: string; item: string }[];
   steps: { text: string; timestamp?: string; timestamp_sec?: number; index?: number }[];
   userId?: string;
   owner_id?: string;

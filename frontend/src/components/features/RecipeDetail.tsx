@@ -173,15 +173,20 @@ export function RecipeDetail({
           <div className="bg-white rounded-xl border border-gray-200 p-4 md:p-6">
             <h2 className="text-gray-900 mb-4 text-lg md:text-xl">Ingredients</h2>
             <div className="space-y-3">
-              {recipe.ingredients.map((ingredient, idx) => (
-                <div key={idx} className="flex items-start gap-3">
-                  <div className="w-2 h-2 bg-orange-500 rounded-full mt-2 flex-shrink-0" />
-                  <div className="flex-1">
-                    <span className="text-gray-900 text-sm md:text-base">{ingredient.amount}</span>
-                    <span className="text-gray-600 ml-2 text-sm md:text-base">{ingredient.name}</span>
+              {recipe.ingredients.map((ingredient, idx) => {
+                // Build display line: [orange qty] + [unit + " " + item]
+                const unitPart = ingredient.unit ? `${ingredient.unit} ` : '';
+                const displayText = `${unitPart}${ingredient.item}`;
+                return (
+                  <div key={idx} className="flex items-start gap-3">
+                    <div className="w-2 h-2 bg-orange-500 rounded-full mt-2 flex-shrink-0" />
+                    <div className="flex-1">
+                      <span className="text-orange-500 text-sm md:text-base font-medium">{ingredient.qty}</span>
+                      <span className="text-gray-600 ml-2 text-sm md:text-base">{displayText}</span>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 

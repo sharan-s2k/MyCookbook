@@ -406,13 +406,11 @@ function RecipeDetailRoute() {
           source_ref: data.source_ref,
           youtubeUrl: data.source_type === 'youtube' ? data.source_ref : undefined,
           ingredients: Array.isArray(data.ingredients)
-            ? data.ingredients.map((ing: string) => {
-                const parts = ing.split(/\s+(.+)/);
-                return {
-                  name: parts[1] || ing,
-                  amount: parts[0] || '',
-                };
-              })
+            ? data.ingredients.map((ing: any) => ({
+                qty: String(ing.qty),
+                unit: String(ing.unit),
+                item: String(ing.item),
+              }))
             : [],
           steps: data.steps.map((step: any) => ({
             text: step.text,
@@ -503,13 +501,11 @@ function CookModeRoute() {
           source_ref: data.source_ref,
           youtubeUrl: data.source_type === 'youtube' ? data.source_ref : undefined,
           ingredients: Array.isArray(data.ingredients)
-            ? data.ingredients.map((ing: string) => {
-                const parts = ing.split(/\s+(.+)/);
-                return {
-                  name: parts[1] || ing,
-                  amount: parts[0] || '',
-                };
-              })
+            ? data.ingredients.map((ing: any) => ({
+                qty: String(ing.qty),
+                unit: String(ing.unit),
+                item: String(ing.item),
+              }))
             : [],
           steps: data.steps.map((step: any) => ({
             text: step.text,
@@ -597,10 +593,10 @@ function App() {
         createdAt: new Date('2024-12-16'),
         description: 'Fragrant Thai curry with coconut milk and vegetables.',
         ingredients: [
-          { name: 'Green curry paste', amount: '3 tbsp' },
-          { name: 'Coconut milk', amount: '400ml' },
-          { name: 'Chicken breast', amount: '500g' },
-          { name: 'Thai basil', amount: '1 bunch' },
+          { qty: '3', unit: 'tbsp', item: 'Green curry paste' },
+          { qty: '400', unit: 'ml', item: 'Coconut milk' },
+          { qty: '500', unit: 'g', item: 'Chicken breast' },
+          { qty: '1', unit: 'bunch', item: 'Thai basil' },
         ],
         steps: [
           { text: 'Fry curry paste in a pan until fragrant' },
@@ -752,17 +748,11 @@ function App() {
         source_ref: r.source_ref,
         youtubeUrl: r.source_type === 'youtube' ? r.source_ref : undefined,
         ingredients: Array.isArray(r.ingredients)
-          ? r.ingredients.map((ing: string | { name: string; amount: string }) => {
-              if (typeof ing === 'string') {
-                // Try to parse "amount name" format
-                const parts = ing.split(/\s+(.+)/);
-                return {
-                  name: parts[1] || ing,
-                  amount: parts[0] || '',
-                };
-              }
-              return ing;
-            })
+          ? r.ingredients.map((ing: any) => ({
+              qty: String(ing.qty),
+              unit: String(ing.unit),
+              item: String(ing.item),
+            }))
           : [],
         steps: Array.isArray(r.steps)
           ? r.steps.map((step: any) => ({

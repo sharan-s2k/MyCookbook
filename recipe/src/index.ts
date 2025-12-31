@@ -535,18 +535,40 @@ fastify.patch('/:recipe_id', { preHandler: extractUserId }, async (request, repl
           },
         });
       }
-      // Convert to array of strings if needed (handle frontend format)
-      const ingredientsArray = body.ingredients.map((ing: any) => {
-        if (typeof ing === 'string') {
-          return ing;
+      // Validate each ingredient has qty/unit/item as strings and qty not empty
+      for (let i = 0; i < body.ingredients.length; i++) {
+        const ing = body.ingredients[i];
+        if (!ing || typeof ing !== 'object') {
+          return reply.code(400).send({
+            error: {
+              code: 'VALIDATION_ERROR',
+              message: `Ingredient ${i + 1} must be an object`,
+              request_id: request.id,
+            },
+          });
         }
-        // Frontend format: {name: string, amount: string}
-        const amount = ing.amount || '';
-        const name = ing.name || '';
-        return amount ? `${amount} ${name}`.trim() : name;
-      });
+        if (typeof ing.qty !== 'string' || typeof ing.unit !== 'string' || typeof ing.item !== 'string') {
+          return reply.code(400).send({
+            error: {
+              code: 'VALIDATION_ERROR',
+              message: `Ingredient ${i + 1} must have qty, unit, and item as strings`,
+              request_id: request.id,
+            },
+          });
+        }
+        if (!ing.qty || ing.qty.trim() === '') {
+          return reply.code(400).send({
+            error: {
+              code: 'VALIDATION_ERROR',
+              message: `Ingredient ${i + 1} qty must not be empty`,
+              request_id: request.id,
+            },
+          });
+        }
+      }
+      // Store ingredients directly as JSONB array of objects
       updates.push(`ingredients = $${paramIndex++}::jsonb`);
-      values.push(JSON.stringify(ingredientsArray));
+      values.push(JSON.stringify(body.ingredients));
     }
 
     if (body.steps !== undefined) {
@@ -963,7 +985,7 @@ fastify.post(
 
       const recipeId = uuidv4();
 
-      // Create recipe
+      // Create recipe - ingredients should already be array of objects from AI orchestrator
       await client.query(
         `INSERT INTO recipes (id, owner_id, title, description, is_public, source_type, source_ref, status, ingredients, steps)
          VALUES ($1, $2, $3, $4, false, 'youtube', $5, 'READY', $6::jsonb, $7::jsonb)`,

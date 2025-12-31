@@ -551,12 +551,21 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
             <div className="flex-1 overflow-y-auto p-4 space-y-2">
               {recipe.ingredients.map((ingredient, idx) => {
                 const isChecked = checkedIngredients.has(idx);
-                const scaledAmount = ingredient.amount.replace(/\d+(\.\d+)?/g, (match) => {
-                  const num = parseFloat(match) * servingMultiplier;
+                // Scale qty only if it's a numeric string
+                const n = Number(ingredient.qty);
+                let displayQty: string;
+                if (Number.isFinite(n) && !isNaN(n)) {
+                  const scaled = n * servingMultiplier;
                   // Show up to 2 decimal places, removing trailing zeros
-                  const formatted = num % 1 === 0 ? num.toString() : num.toFixed(2).replace(/\.?0+$/, '');
-                  return formatted;
-                });
+                  displayQty = scaled % 1 === 0 ? scaled.toString() : scaled.toFixed(2).replace(/\.?0+$/, '');
+                } else {
+                  // Display as-is for "To taste", "As required", etc.
+                  displayQty = ingredient.qty;
+                }
+                
+                // Build display line: [orange qty] + [unit + " " + item]
+                const unitPart = ingredient.unit ? `${ingredient.unit} ` : '';
+                const displayText = `${unitPart}${ingredient.item}`;
 
                 return (
                   <button
@@ -570,7 +579,7 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
                       <Square className="w-5 h-5 text-gray-400 flex-shrink-0 mt-0.5" />
                     )}
                     <div className={isChecked ? 'line-through text-gray-500' : 'text-gray-200'}>
-                      <span className="text-orange-300">{scaledAmount}</span> {ingredient.name}
+                      <span className="text-orange-300">{displayQty}</span> {displayText}
                     </div>
                   </button>
                 );

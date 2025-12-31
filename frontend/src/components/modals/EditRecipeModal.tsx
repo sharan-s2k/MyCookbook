@@ -14,18 +14,13 @@ export function EditRecipeModal({ recipe, onSave, onClose }: EditRecipeModalProp
   const { updateRecipeInStore } = useAppContext();
   
   // Normalize ingredients to always be object format for editing
-  const normalizeIngredients = (ings: Recipe['ingredients']): Array<{ name: string; amount: string }> => {
+  const normalizeIngredients = (ings: Recipe['ingredients']): Array<{ qty: string; unit: string; item: string }> => {
     if (!Array.isArray(ings)) return [];
-    return ings.map(ing => {
-      if (typeof ing === 'string') {
-        const parts = ing.split(/\s+(.+)/);
-        return {
-          name: parts[1] || ing,
-          amount: parts[0] || '',
-        };
-      }
-      return ing;
-    });
+    return ings.map(ing => ({
+      qty: String(ing.qty),
+      unit: String(ing.unit),
+      item: String(ing.item),
+    }));
   };
 
   const [title, setTitle] = useState(recipe.title);
@@ -33,7 +28,7 @@ export function EditRecipeModal({ recipe, onSave, onClose }: EditRecipeModalProp
   const [duration, setDuration] = useState(recipe.duration);
   const [cuisine, setCuisine] = useState(recipe.cuisine);
   const [isPublic, setIsPublic] = useState(recipe.isPublic);
-  const [ingredients, setIngredients] = useState<Array<{ name: string; amount: string }>>(normalizeIngredients(recipe.ingredients));
+  const [ingredients, setIngredients] = useState<Array<{ qty: string; unit: string; item: string }>>(normalizeIngredients(recipe.ingredients));
   const [steps, setSteps] = useState(recipe.steps);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,14 +48,13 @@ export function EditRecipeModal({ recipe, onSave, onClose }: EditRecipeModalProp
     setError(null);
 
     try {
-      // Transform frontend format to backend format
+      // Transform frontend format to backend format - send as {qty, unit, item} objects
       const backendIngredients = (Array.isArray(ingredients) ? ingredients : []).map((ing: any) => {
-        if (typeof ing === 'string') {
-          return ing;
-        }
-        const amount = ing.amount || '';
-        const name = ing.name || '';
-        return amount ? `${amount} ${name}`.trim() : name;
+        return {
+          qty: String(ing.qty || 'As required'),
+          unit: String(ing.unit || ''),
+          item: String(ing.item || ''),
+        };
       });
 
       const backendSteps = (Array.isArray(steps) ? steps : []).map((step: any, idx: number) => {
@@ -77,7 +71,7 @@ export function EditRecipeModal({ recipe, onSave, onClose }: EditRecipeModalProp
         title: string;
         description?: string | null;
         is_public: boolean;
-        ingredients: string[];
+        ingredients: Array<{ qty: string; unit: string; item: string }>;
         steps: any[];
       } = {
         title: title.trim(),
@@ -103,13 +97,11 @@ export function EditRecipeModal({ recipe, onSave, onClose }: EditRecipeModalProp
         source_ref: updatedData.source_ref,
         youtubeUrl: updatedData.source_type === 'youtube' ? updatedData.source_ref : undefined,
         ingredients: Array.isArray(updatedData.ingredients)
-          ? updatedData.ingredients.map((ing: string) => {
-              const parts = ing.split(/\s+(.+)/);
-              return {
-                name: parts[1] || ing,
-                amount: parts[0] || '',
-              };
-            })
+          ? updatedData.ingredients.map((ing: any) => ({
+              qty: String(ing.qty),
+              unit: String(ing.unit),
+              item: String(ing.item),
+            }))
           : [],
         steps: updatedData.steps.map((step: any) => ({
           text: step.text,
@@ -149,7 +141,7 @@ export function EditRecipeModal({ recipe, onSave, onClose }: EditRecipeModalProp
   };
 
   const addIngredient = () => {
-    setIngredients([...ingredients, { name: '', amount: '' }]);
+    setIngredients([...ingredients, { qty: '', unit: '', item: '' }]);
   };
 
   const removeIngredient = (index: number) => {
@@ -240,21 +232,32 @@ export function EditRecipeModal({ recipe, onSave, onClose }: EditRecipeModalProp
                   <div key={idx} className="flex gap-2">
                     <input
                       type="text"
-                      value={ing.amount}
+                      value={ing.qty}
                       onChange={(e) => {
                         const newIng = [...ingredients];
-                        newIng[idx].amount = e.target.value;
+                        newIng[idx].qty = e.target.value;
                         setIngredients(newIng);
                       }}
-                      placeholder="Amount"
-                      className="w-32 px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                      placeholder="Qty"
+                      className="w-24 px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
                     />
                     <input
                       type="text"
-                      value={ing.name}
+                      value={ing.unit}
                       onChange={(e) => {
                         const newIng = [...ingredients];
-                        newIng[idx].name = e.target.value;
+                        newIng[idx].unit = e.target.value;
+                        setIngredients(newIng);
+                      }}
+                      placeholder="Unit"
+                      className="w-24 px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                    />
+                    <input
+                      type="text"
+                      value={ing.item}
+                      onChange={(e) => {
+                        const newIng = [...ingredients];
+                        newIng[idx].item = e.target.value;
                         setIngredients(newIng);
                       }}
                       placeholder="Ingredient"

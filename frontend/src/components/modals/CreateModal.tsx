@@ -39,7 +39,7 @@ export function CreateModal({ onClose, onSave, onRecipeCreated }: CreateModalPro
   const [description, setDescription] = useState('');
   const [duration, setDuration] = useState('');
   const [cuisine, setCuisine] = useState('');
-  const [ingredients, setIngredients] = useState<Array<{ name: string; amount: string }>>([]);
+  const [ingredients, setIngredients] = useState<Array<{ qty: string; unit: string; item: string }>>([]);
   const [steps, setSteps] = useState<Array<{ text: string; timestamp_sec?: number; index?: number }>>([]);
 
   // Extract video ID from YouTube URL
@@ -239,16 +239,11 @@ export function CreateModal({ onClose, onSave, onRecipeCreated }: CreateModalPro
               source_ref: recipeData.source_ref,
               youtubeUrl: recipeData.source_type === 'youtube' ? recipeData.source_ref : undefined,
               ingredients: Array.isArray(recipeData.ingredients)
-                ? recipeData.ingredients.map((ing: string | { name: string; amount: string }) => {
-                    if (typeof ing === 'string') {
-                      const parts = ing.split(/\s+(.+)/);
-                      return {
-                        name: parts[1] || ing,
-                        amount: parts[0] || '',
-                      };
-                    }
-                    return ing;
-                  })
+                ? recipeData.ingredients.map((ing: any) => ({
+                    qty: String(ing.qty),
+                    unit: String(ing.unit),
+                    item: String(ing.item),
+                  }))
                 : [],
               steps: recipeData.steps.map((step: any) => ({
                 text: step.text,
@@ -262,7 +257,7 @@ export function CreateModal({ onClose, onSave, onRecipeCreated }: CreateModalPro
             // Populate editing fields with recipe data
             setTitle(transformed.title);
             setDescription(transformed.description);
-            setIngredients(transformed.ingredients as Array<{ name: string; amount: string }>);
+            setIngredients(transformed.ingredients);
             setSteps(transformed.steps.map(s => ({ 
               text: s.text,
               timestamp_sec: s.timestamp_sec,
@@ -354,11 +349,13 @@ export function CreateModal({ onClose, onSave, onRecipeCreated }: CreateModalPro
     try {
       const { recipeAPI } = await import('../../api/client');
       
-      // Transform frontend format to backend format
+      // Transform frontend format to backend format - send as {qty, unit, item} objects
       const backendIngredients = ingredients.map((ing) => {
-        const amount = ing.amount || '';
-        const name = ing.name || '';
-        return amount ? `${amount} ${name}`.trim() : name;
+        return {
+          qty: String(ing.qty || 'As required'),
+          unit: String(ing.unit || ''),
+          item: String(ing.item || ''),
+        };
       });
 
       const backendSteps = steps.map((step, idx) => {
@@ -375,7 +372,7 @@ export function CreateModal({ onClose, onSave, onRecipeCreated }: CreateModalPro
       const updatePayload: {
         title: string;
         description?: string | null;
-        ingredients: string[];
+        ingredients: Array<{ qty: string; unit: string; item: string }>;
         steps: any[];
       } = {
         title: title.trim(),
@@ -408,13 +405,11 @@ export function CreateModal({ onClose, onSave, onRecipeCreated }: CreateModalPro
         source_ref: updatedData.source_ref,
         youtubeUrl: updatedData.source_type === 'youtube' ? updatedData.source_ref : undefined,
         ingredients: Array.isArray(updatedData.ingredients)
-          ? updatedData.ingredients.map((ing: string) => {
-              const parts = ing.split(/\s+(.+)/);
-              return {
-                name: parts[1] || ing,
-                amount: parts[0] || '',
-              };
-            })
+          ? updatedData.ingredients.map((ing: any) => ({
+              qty: String(ing.qty),
+              unit: String(ing.unit),
+              item: String(ing.item),
+            }))
           : [],
         steps: updatedData.steps.map((step: any) => ({
           text: step.text,
@@ -677,21 +672,32 @@ export function CreateModal({ onClose, onSave, onRecipeCreated }: CreateModalPro
                     <div key={idx} className="flex gap-2">
                       <input
                         type="text"
-                        value={ing.amount}
+                        value={ing.qty}
                         onChange={(e) => {
                           const newIng = [...ingredients];
-                          newIng[idx].amount = e.target.value;
+                          newIng[idx].qty = e.target.value;
                           setIngredients(newIng);
                         }}
-                        placeholder="Amount"
-                        className="w-32 px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                        placeholder="Qty"
+                        className="w-24 px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
                       />
                       <input
                         type="text"
-                        value={ing.name}
+                        value={ing.unit}
                         onChange={(e) => {
                           const newIng = [...ingredients];
-                          newIng[idx].name = e.target.value;
+                          newIng[idx].unit = e.target.value;
+                          setIngredients(newIng);
+                        }}
+                        placeholder="Unit"
+                        className="w-24 px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+                      />
+                      <input
+                        type="text"
+                        value={ing.item}
+                        onChange={(e) => {
+                          const newIng = [...ingredients];
+                          newIng[idx].item = e.target.value;
                           setIngredients(newIng);
                         }}
                         placeholder="Ingredient"

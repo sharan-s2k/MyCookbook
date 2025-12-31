@@ -43,6 +43,12 @@ class Step(BaseModel):
     timestamp_sec: int = Field(..., description="Timestamp in seconds (0 if unknown)")
 
 
+class Ingredient(BaseModel):
+    qty: str = Field(..., description="Quantity as decimal string (e.g., '0.5', '2.5') or descriptive string (e.g., 'To taste', 'As required')")
+    unit: str = Field(..., description="Unit of measurement (e.g., 'cup', 'tsp', '')")
+    item: str = Field(..., description="Ingredient name/description excluding qty/unit")
+
+
 class ExtractRequest(BaseModel):
     source_type: str = Field(..., description="Source type (e.g., 'youtube')")
     source_ref: str = Field(..., description="Source reference (e.g., YouTube URL)")
@@ -53,7 +59,7 @@ class ExtractRequest(BaseModel):
 class ExtractResponse(BaseModel):
     title: str
     description: Optional[str] = None
-    ingredients: List[str]
+    ingredients: List[Ingredient]
     steps: List[Step]
 
 
@@ -65,7 +71,11 @@ CRITICAL RULES:
 {
   "title": "Recipe Title",
   "description": "Optional description",
-  "ingredients": ["ingredient 1", "ingredient 2", ...],
+  "ingredients": [
+    {"qty": "0.5", "unit": "cup", "item": "dried cilantro"},
+    {"qty": "As required", "unit": "", "item": "oil (for cooking)"},
+    {"qty": "To taste", "unit": "", "item": "salt"}
+  ],
   "steps": [
     {"index": 1, "text": "Step instruction", "timestamp_sec": 123},
     {"index": 2, "text": "Step instruction", "timestamp_sec": 456},
@@ -73,7 +83,15 @@ CRITICAL RULES:
   ]
 }
 
-3. Ingredients must be an array of strings. Each string should be a complete ingredient with quantity if mentioned (e.g., "2 cups flour", "1 tablespoon olive oil").
+3. Ingredients must be an array of objects with qty, unit, and item fields:
+   - qty: ALWAYS a string. MUST NOT be empty.
+     * If measurable quantity exists: MUST be a decimal string (no fractions, no mixed numbers).
+       Examples: "1/2 cup" -> qty "0.5", "2 1/2 cups" -> qty "2.5", "3/4 tsp" -> qty "0.75"
+     * If quantity missing or non-measurable:
+       - For salt/pepper/seasoning keywords -> qty "To taste"
+       - For oil/water/for cooking/as needed -> qty "As required"
+   - unit: string, use "" when not present (e.g., "cup", "tsp", "tbsp", "g", "kg", "")
+   - item: ingredient name/description excluding qty/unit (e.g., "dried cilantro", "oil (for cooking)", "salt")
 
 4. Steps must be an array of objects with:
    - index: sequential number starting from 1
@@ -190,6 +208,28 @@ Output as JSON matching the required schema."""
                     detail=f"Recipe extraction failed: {error_desc}",
                 )
 
+        # Validate ingredients structure
+        validated_ingredients = []
+        for i, ing in enumerate(ingredients_list):
+            if not isinstance(ing, dict):
+                raise ValueError(f"Ingredient {i+1} is not an object")
+            if "qty" not in ing or "unit" not in ing or "item" not in ing:
+                raise ValueError(f"Ingredient {i+1} missing required fields (qty, unit, item)")
+            qty = str(ing["qty"])
+            unit = str(ing["unit"])
+            item = str(ing["item"])
+            if not qty or qty.strip() == "":
+                raise ValueError(f"Ingredient {i+1} qty must not be empty")
+            if not isinstance(qty, str) or not isinstance(unit, str) or not isinstance(item, str):
+                raise ValueError(f"Ingredient {i+1} qty, unit, and item must be strings")
+            validated_ingredients.append(
+                Ingredient(
+                    qty=qty,
+                    unit=unit,
+                    item=item,
+                )
+            )
+
         for i, step in enumerate(steps_list):
             if not isinstance(step, dict):
                 raise ValueError(f"Step {i+1} is not an object")
@@ -206,7 +246,7 @@ Output as JSON matching the required schema."""
         return ExtractResponse(
             title=str(recipe_data["title"]),
             description=recipe_data.get("description"),
-            ingredients=[str(ing) for ing in ingredients_list],
+            ingredients=validated_ingredients,
             steps=validated_steps,
         )
 
