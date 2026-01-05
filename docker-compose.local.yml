@@ -209,6 +209,8 @@ services:
         condition: service_started
       recipe:
         condition: service_started
+      ai-orchestrator:
+        condition: service_started
     ports:
       - "8080:8080"
     environment:
@@ -216,7 +218,9 @@ services:
       AUTH_URL: http://auth:8001
       USER_URL: http://user:8002
       RECIPE_URL: http://recipe:8003
+      AI_ORCHESTRATOR_URL: http://ai-orchestrator:8004
       JWT_PUBLIC_OR_SHARED_SECRET: ${JWT_SECRET:-dev-secret-change-in-production}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
       GATEWAY_TOKEN: ${GATEWAY_TOKEN:-${SERVICE_TOKEN:-dev-service-token}}
       FRONTEND_ORIGIN: http://localhost:3000
       GATEWAY_UPSTREAM_TIMEOUT_MS: ${GATEWAY_UPSTREAM_TIMEOUT_MS:-5000}

@@ -9,11 +9,20 @@ const PORT = parseInt(process.env.PORT || '8080', 10);
 const AUTH_URL = process.env.AUTH_URL!;
 const USER_URL = process.env.USER_URL!;
 const RECIPE_URL = process.env.RECIPE_URL!;
+const AI_ORCHESTRATOR_URL = process.env.AI_ORCHESTRATOR_URL!;
 const JWT_SECRET = process.env.JWT_PUBLIC_OR_SHARED_SECRET!;
-const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || process.env.SERVICE_TOKEN || JWT_SECRET; // Gateway token for internal services
+// SERVICE_TOKEN: Shared secret for service-to-service authentication (x-service-token header)
+const SERVICE_TOKEN = process.env.SERVICE_TOKEN!;
+// GATEWAY_TOKEN: Token for gateway authentication (x-gateway-token header to user/recipe services)
+const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || SERVICE_TOKEN;
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:3000';
 const GATEWAY_UPSTREAM_TIMEOUT_MS = parseInt(process.env.GATEWAY_UPSTREAM_TIMEOUT_MS || '5000', 10);
 const CORS_MAX_AGE_SECONDS = parseInt(process.env.CORS_MAX_AGE_SECONDS || '600', 10);
+
+// Fail fast if SERVICE_TOKEN is not configured (required for service-to-service auth)
+if (!SERVICE_TOKEN) {
+  throw new Error('SERVICE_TOKEN environment variable is required for service-to-service authentication');
+}
 
 // Note: @fastify/http-proxy manages upstream connections internally
 
@@ -260,6 +269,33 @@ fastify.register(
           };
         },
         // @fastify/http-proxy automatically forwards all response headers including ETag, Retry-After, Cache-Control
+      },
+    });
+  }
+);
+
+// AI routes (protected)
+fastify.register(
+  async function (fastify) {
+    fastify.addHook('preHandler', verifyJWT);
+    // Note: Upstream timeout is handled by Fastify's requestTimeout + onTimeout handler
+    fastify.register(httpProxy, {
+      upstream: AI_ORCHESTRATOR_URL,
+      prefix: '/api/ai',
+      rewritePrefix: '',
+      http2: false,
+      replyOptions: {
+        rewriteRequestHeaders: (originalReq, headers) => {
+          // Remove any user-supplied headers that we control
+          const cleanHeaders: any = { ...headers };
+          delete cleanHeaders['x-service-token'];
+          
+          return {
+            ...cleanHeaders,
+            'x-request-id': (originalReq as any).requestId || uuidv4(),
+            'x-service-token': SERVICE_TOKEN, // Use SERVICE_TOKEN for service-to-service auth
+          };
+        },
       },
     });
   }

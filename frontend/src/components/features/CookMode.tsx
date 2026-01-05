@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Play, Pause, SkipBack, SkipForward, Mic, MicOff, ChevronUp, ChevronDown, Plus, Minus, Clock, CheckSquare, Square } from 'lucide-react';
 import type { Recipe } from '../../types';
+import { aiAPI } from '../../api/client';
 
 interface CookModeProps {
   recipe: Recipe;
@@ -241,27 +242,100 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
     setTimers(timers.filter(t => t.id !== id));
   };
 
-  const handleVoiceCommand = (command: string) => {
-    setAiMessages([...aiMessages, { type: 'user', text: command }]);
+  // Classify user message as navigation command or general question
+  const classifyMessage = (message: string): 'NAVIGATION_COMMAND' | 'GENERAL_QUESTION' => {
+    const normalized = message.toLowerCase().trim();
     
-    // Simulate AI response
-    setTimeout(() => {
-      let response = '';
-      if (command.includes('scale to 500g')) {
-        response = 'Scaled recipe to 500g chicken. All ingredient quantities have been updated.';
-      } else if (command.includes('too much salt')) {
-        response = 'If you added too much salt, try adding a peeled potato to absorb some of the salt, or balance it with a bit of sugar or acid like lemon juice.';
-      } else if (command.includes('add tomato')) {
-        const stepIndex = recipe.steps.findIndex(s => s.text.toLowerCase().includes('tomato'));
-        if (stepIndex >= 0) {
-          setCurrentStepIndex(stepIndex);
-          response = `Jumped to step ${stepIndex + 1}: ${recipe.steps[stepIndex].text}`;
-        }
-      } else {
-        response = 'I can help you navigate steps, scale ingredients, or answer cooking questions.';
+    // Navigation command patterns (exact matching)
+    const navPatterns = [
+      /^go to step \d+$/,
+      /^step \d+$/,
+      /^next step$/,
+      /^previous step$/,
+    ];
+    
+    for (const pattern of navPatterns) {
+      if (pattern.test(normalized)) {
+        return 'NAVIGATION_COMMAND';
       }
-      setAiMessages(prev => [...prev, { type: 'assistant', text: response }]);
-    }, 500);
+    }
+    
+    return 'GENERAL_QUESTION';
+  };
+
+  // Parse navigation command and execute
+  const handleNavigationCommand = (command: string) => {
+    const normalized = command.toLowerCase().trim();
+    
+    if (normalized === 'next step') {
+      if (currentStepIndex < recipe.steps.length - 1) {
+        const nextIndex = currentStepIndex + 1;
+        handleJumpToStep(nextIndex);
+        setAiMessages(prev => [...prev, { type: 'assistant', text: `Jumped to step ${nextIndex + 1}` }]);
+      } else {
+        setAiMessages(prev => [...prev, { type: 'assistant', text: 'Already at the last step' }]);
+      }
+      return;
+    }
+    
+    if (normalized === 'previous step') {
+      if (currentStepIndex > 0) {
+        const prevIndex = currentStepIndex - 1;
+        handleJumpToStep(prevIndex);
+        setAiMessages(prev => [...prev, { type: 'assistant', text: `Jumped to step ${prevIndex + 1}` }]);
+      } else {
+        setAiMessages(prev => [...prev, { type: 'assistant', text: 'Already at the first step' }]);
+      }
+      return;
+    }
+    
+    // Extract step number from "go to step N" or "step N"
+    const stepMatch = normalized.match(/step (\d+)/);
+    if (stepMatch) {
+      const stepNum = parseInt(stepMatch[1], 10);
+      const stepIndex = stepNum - 1; // Convert to 0-based index
+      
+      if (stepIndex >= 0 && stepIndex < recipe.steps.length) {
+        handleJumpToStep(stepIndex);
+        setAiMessages(prev => [...prev, { type: 'assistant', text: `Jumped to step ${stepNum}` }]);
+      } else {
+        setAiMessages(prev => [...prev, { type: 'assistant', text: `Step ${stepNum} is out of range. This recipe has ${recipe.steps.length} steps.` }]);
+      }
+      return;
+    }
+  };
+
+  const handleVoiceCommand = async (command: string) => {
+    setAiMessages(prev => [...prev, { type: 'user', text: command }]);
+    
+    const classification = classifyMessage(command);
+    
+    if (classification === 'NAVIGATION_COMMAND') {
+      // Handle navigation locally (no AI call)
+      handleNavigationCommand(command);
+    } else {
+      // General question - call AI
+      try {
+        const response = await aiAPI.chat(
+          {
+            id: recipe.id,
+            title: recipe.title,
+            description: recipe.description,
+            ingredients: recipe.ingredients,
+            steps: recipe.steps.map((step, idx) => ({
+              text: step.text,
+              index: step.index || idx + 1,
+            })),
+          },
+          command,
+          currentStepIndex
+        );
+        setAiMessages(prev => [...prev, { type: 'assistant', text: response }]);
+      } catch (error) {
+        console.error('AI chat error:', error);
+        setAiMessages(prev => [...prev, { type: 'assistant', text: 'Sorry, I encountered an error. Please try again.' }]);
+      }
+    }
   };
 
   // Timer countdown effect
@@ -415,35 +489,35 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
               ))}
             </div>
 
-            {/* Voice command suggestions */}
+            {/* Chat input */}
             <div className="p-4 border-t border-gray-700">
               <div className="flex flex-wrap gap-2 mb-3">
                 <button
-                  onClick={() => handleVoiceCommand("Go to 'add tomato'")}
+                  onClick={() => handleVoiceCommand('go to step 3')}
                   className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg text-sm transition-colors"
                 >
-                  Go to 'add tomato'
+                  Go to step 3
                 </button>
                 <button
-                  onClick={() => handleVoiceCommand('What if I added too much salt?')}
+                  onClick={() => handleVoiceCommand('next step')}
                   className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg text-sm transition-colors"
                 >
-                  Too much salt?
+                  Next step
                 </button>
                 <button
-                  onClick={() => handleVoiceCommand('Scale to 500g')}
+                  onClick={() => handleVoiceCommand('What can I substitute for yogurt?')}
                   className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg text-sm transition-colors"
                 >
-                  Scale to 500g
+                  Substitution help
                 </button>
               </div>
               <input
                 type="text"
-                placeholder="Type a question or command..."
+                placeholder="Type a question or command (e.g., 'go to step 3', 'next step', 'What can I substitute for yogurt?')"
                 className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-orange-500"
                 onKeyPress={(e) => {
-                  if (e.key === 'Enter' && e.currentTarget.value) {
-                    handleVoiceCommand(e.currentTarget.value);
+                  if (e.key === 'Enter' && e.currentTarget.value.trim()) {
+                    handleVoiceCommand(e.currentTarget.value.trim());
                     e.currentTarget.value = '';
                   }
                 }}

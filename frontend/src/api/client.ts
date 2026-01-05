@@ -336,6 +336,47 @@ export const recipeAPI = {
   },
 };
 
+// AI API
+export const aiAPI = {
+  async chat(recipe: {
+    id: string;
+    title: string;
+    description?: string;
+    ingredients: Array<{ qty: string; unit: string; item: string }>;
+    steps: Array<{ text: string; index?: number }>;
+  }, userMessage: string, currentStepIndex?: number) {
+    const response = await fetchWithAuth('/ai/chat', {
+      method: 'POST',
+      body: JSON.stringify({
+        recipe_id: recipe.id,
+        title: recipe.title,
+        description: recipe.description || null,
+        ingredients: recipe.ingredients,
+        steps: recipe.steps.map(step => ({
+          text: step.text,
+          index: step.index || null,
+        })),
+        user_message: userMessage,
+        current_step_index: currentStepIndex !== undefined ? currentStepIndex : null,
+      }),
+    });
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to get AI response';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || error.error?.detail || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    const data = await response.json();
+    return data.message;
+  },
+};
+
 // User API
 export const userAPI = {
   async getMe() {

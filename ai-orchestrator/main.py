@@ -25,15 +25,20 @@ SERVICE_TOKEN = os.getenv("SERVICE_TOKEN")
 
 if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY environment variable is required")
+if not SERVICE_TOKEN:
+    raise ValueError("SERVICE_TOKEN environment variable is required for service-to-service authentication")
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel(GEMINI_MODEL)
 
 
 # Dependency to verify service token
-async def verify_service_token(x_service_token: str = Header(None)):
-    if SERVICE_TOKEN and x_service_token != SERVICE_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid service token")
+async def verify_service_token(x_service_token: Optional[str] = Header(None)):
+    if SERVICE_TOKEN:
+        if not x_service_token:
+            raise HTTPException(status_code=401, detail="Service token header missing")
+        if x_service_token != SERVICE_TOKEN:
+            raise HTTPException(status_code=401, detail="Invalid service token")
     return True
 
 
@@ -61,6 +66,25 @@ class ExtractResponse(BaseModel):
     description: Optional[str] = None
     ingredients: List[Ingredient]
     steps: List[Step]
+
+
+class ChatStep(BaseModel):
+    text: str = Field(..., description="Step instruction text")
+    index: Optional[int] = Field(None, description="Step number (1-indexed, optional)")
+
+
+class ChatRequest(BaseModel):
+    recipe_id: str = Field(..., description="Recipe ID")
+    title: str = Field(..., description="Recipe title")
+    description: Optional[str] = Field(None, description="Recipe description")
+    ingredients: List[Ingredient] = Field(..., description="Recipe ingredients")
+    steps: List[ChatStep] = Field(..., description="Recipe steps (text only, no transcript)")
+    user_message: str = Field(..., description="User's question or message")
+    current_step_index: Optional[int] = Field(None, description="Current step index (0-based)")
+
+
+class ChatResponse(BaseModel):
+    message: str = Field(..., description="AI assistant response")
 
 
 SYSTEM_PROMPT = """You are a recipe extraction assistant. Your task is to extract structured recipe information from a video transcript.
@@ -254,6 +278,95 @@ Output as JSON matching the required schema."""
         raise HTTPException(
             status_code=422,
             detail=f"Invalid response format: {str(e)}",
+        )
+    except HTTPException:
+        raise  # Re-raise HTTPException as-is
+    except Exception as e:
+        error_str = str(e).lower()
+        if "api" in error_str or "gemini" in error_str:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Gemini API error: {str(e)}",
+            )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal error: {str(e)}",
+        )
+
+
+# CHAT_SYSTEM_PROMPT = """You are a cooking assistant helping users while they cook. Answer questions concisely and practically based ONLY on the recipe context provided. Keep responses brief (2-3 sentences max when possible). Do not invent recipe-specific details beyond what's provided. If asked about something not in the recipe context, say so briefly."""
+
+CHAT_SYSTEM_PROMPT = """
+You are a cooking assistant helping users while they cook.
+
+Use the recipe context when it is relevant.
+If the user asks a general cooking question that is not answered by the recipe context, give practical general cooking advice.
+
+Do NOT invent recipe-specific details that are not provided (times, temperatures, quantities, ingredients the user didn't mention).
+If details are missing, give options and clearly label them as general suggestions.
+
+Keep responses concise and actionable (2–5 sentences, use bullets if helpful).
+"""
+
+
+
+@app.post("/chat", response_model=ChatResponse, dependencies=[Depends(verify_service_token)])
+async def chat(request: ChatRequest):
+    """
+    Answer cooking questions about a recipe. Does NOT use full transcript.
+    """
+    try:
+        # Build minimal recipe context
+        ingredients_text = "\n".join([
+            f"- {ing.qty} {ing.unit} {ing.item}".strip()
+            for ing in request.ingredients
+        ])
+        
+        steps_text = "\n".join([
+            f"{step.index if step.index is not None else i+1}. {step.text}"
+            for i, step in enumerate(request.steps)
+        ])
+        
+        current_step_info = ""
+        if request.current_step_index is not None and 0 <= request.current_step_index < len(request.steps):
+            current_step = request.steps[request.current_step_index]
+            step_num = current_step.index if current_step.index is not None else (request.current_step_index + 1)
+            current_step_info = f"\n\nCurrent step: {step_num}. {current_step.text}"
+        
+        description_text = f"\n{request.description}" if request.description else ""
+        
+        context_prompt = f"""Recipe: {request.title}{description_text}
+
+Ingredients:
+{ingredients_text}
+
+Steps:
+{steps_text}{current_step_info}
+
+User question: {request.user_message}
+
+Answer concisely and practically. Base your answer ONLY on the recipe context above. If the question is about something not in this context, say so briefly."""
+
+        full_prompt = f"{CHAT_SYSTEM_PROMPT}\n\n{context_prompt}"
+
+        try:
+            response = model.generate_content(
+                full_prompt,
+                generation_config={
+                    "temperature": 0.7,
+                    "max_output_tokens": 300,  # Limit response length for cost efficiency
+                },
+            )
+            content = response.text.strip()
+        except Exception as e:
+            raise ValueError(f"Gemini API error: {str(e)}")
+
+        return ChatResponse(message=content)
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid request: {str(e)}",
         )
     except HTTPException:
         raise  # Re-raise HTTPException as-is
