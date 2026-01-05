@@ -2,7 +2,6 @@ export type Recipe = {
   id: string;
   title: string;
   thumbnail?: string;
-  isPublic: boolean;
   duration?: string;
   cuisine?: string;
   cookbookIds?: string[];
@@ -23,8 +22,15 @@ export type Recipe = {
 export type Cookbook = {
   id: string;
   title: string;
-  recipeCount: number;
+  description?: string;
+  visibility?: 'PRIVATE' | 'PUBLIC';
+  recipe_count: number;
+  recipeCount: number; // Alias for compatibility
   previewImages: string[];
+  is_owner?: boolean;
+  owner_id?: string;
+  saved_at?: string;
+  recipe_ids?: string[];
 };
 
 export type User = {

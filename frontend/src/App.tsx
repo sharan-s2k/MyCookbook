@@ -11,7 +11,7 @@ import { Profile } from './components/features/Profile';
 import { RecipeDetail } from './components/features/RecipeDetail';
 import { CookMode } from './components/features/CookMode';
 import { CreateModal } from './components/modals/CreateModal';
-import { authAPI, recipeAPI, userAPI, setAccessToken, getAccessToken } from './api/client';
+import { authAPI, recipeAPI, userAPI, cookbookAPI, setAccessToken, getAccessToken } from './api/client';
 import type { Recipe, Cookbook, User, FeedPost } from './types';
 
 type AppContextType = {
@@ -132,41 +132,59 @@ function MyRecipesRoute() {
     updateRecipeInStore(updatedRecipe);
   };
 
-  const handleMoveToCookbook = (recipeId: string, cookbookId: string | null) => {
-    setRecipes(recipes.map(r => {
-      if (r.id === recipeId) {
-        const currentCookbookIds = r.cookbookIds || [];
-        const newCookbookIds = cookbookId 
-          ? [...currentCookbookIds.filter(id => id !== cookbookId), cookbookId]
-          : currentCookbookIds.filter(id => !cookbooks.find(cb => cb.id === id));
-        return { ...r, cookbookIds: cookbookId ? [cookbookId] : newCookbookIds };
-      }
-      return r;
-    }));
-    
-    // Update cookbook recipe counts
-    if (cookbookId) {
-      const recipe = recipes.find(r => r.id === recipeId);
-      if (recipe) {
-        const recipeCookbookIds = recipe.cookbookIds || [];
-        setCookbooks(cookbooks.map(cb => {
-          if (cb.id === cookbookId && !recipeCookbookIds.includes(cookbookId)) {
-            return { ...cb, recipeCount: cb.recipeCount + 1, previewImages: [...cb.previewImages.slice(0, 3), recipe.thumbnail || ''] };
-          }
-          if (recipeCookbookIds.includes(cb.id) && cb.id !== cookbookId) {
-            return { ...cb, recipeCount: Math.max(0, cb.recipeCount - 1), previewImages: cb.previewImages.filter(img => img !== recipe.thumbnail) };
-          }
-          return cb;
-        }));
-      }
+  const handleMoveToCookbook = async (recipeId: string, cookbookIds: string[]) => {
+    try {
+      await cookbookAPI.setRecipeCookbooks(recipeId, cookbookIds);
+      // Update local state
+      setRecipes(recipes.map(r => 
+        r.id === recipeId ? { ...r, cookbookIds } : r
+      ));
+      // Refresh cookbooks to update counts
+      const data = await cookbookAPI.listCookbooks();
+      const allCookbooks: Cookbook[] = [
+        ...(data.owned || []).map((cb: any) => ({
+          id: cb.id,
+          title: cb.title,
+          description: cb.description,
+          visibility: cb.visibility,
+          recipe_count: cb.recipe_count || 0,
+          recipeCount: cb.recipe_count || 0,
+          previewImages: [],
+          is_owner: true,
+          owner_id: cb.owner_id,
+        })),
+        ...(data.saved || []).map((cb: any) => ({
+          id: cb.id,
+          title: cb.title,
+          description: cb.description,
+          visibility: cb.visibility,
+          recipe_count: cb.recipe_count || 0,
+          recipeCount: cb.recipe_count || 0,
+          previewImages: [],
+          is_owner: false,
+          owner_id: cb.owner_id,
+          saved_at: cb.saved_at,
+        })),
+      ];
+      // Populate preview images from recipes
+      const updatedRecipes = recipes.map(r => 
+        r.id === recipeId ? { ...r, cookbookIds } : r
+      );
+      const cookbooksWithImages = allCookbooks.map((cb) => {
+        const recipeIds = updatedRecipes.filter((r) => r.cookbookIds?.includes(cb.id)).map((r) => r.id);
+        const previewImages = updatedRecipes
+          .filter((r) => recipeIds.includes(r.id) && r.thumbnail)
+          .slice(0, 4)
+          .map((r) => r.thumbnail!);
+        return { ...cb, previewImages };
+      });
+      setCookbooks(cookbooksWithImages);
+    } catch (error: any) {
+      console.error('Failed to update recipe cookbooks:', error);
+      alert('Failed to save recipe to cookbook. Please try again.');
     }
   };
 
-  const handleTogglePrivacy = (recipeId: string) => {
-    setRecipes(recipes.map(r => 
-      r.id === recipeId ? { ...r, isPublic: !r.isPublic } : r
-    ));
-  };
 
   return (
     <MyRecipes
@@ -188,7 +206,6 @@ function MyRecipesRoute() {
       }}
       onUpdateRecipe={handleUpdateRecipe}
       onMoveToCookbook={handleMoveToCookbook}
-      onTogglePrivacy={handleTogglePrivacy}
     />
   );
 }
@@ -201,38 +218,121 @@ function CookbooksRoute() {
     navigate(`/cookbooks/${cookbook.id}`);
   };
 
-  const handleCreateCookbook = (title: string) => {
-    const newCookbook: Cookbook = {
-      id: `cb${Date.now()}`,
-      title,
-      recipeCount: 0,
-      previewImages: [],
-    };
-    setCookbooks([...cookbooks, newCookbook]);
+  const handleCreateCookbook = async (title: string, visibility: 'PRIVATE' | 'PUBLIC' = 'PRIVATE') => {
+    try {
+      const newCookbook = await cookbookAPI.createCookbook(title, undefined, visibility);
+      const transformed: Cookbook = {
+        id: newCookbook.id,
+        title: newCookbook.title,
+        description: newCookbook.description,
+        visibility: newCookbook.visibility,
+        recipe_count: newCookbook.recipe_count || 0,
+        recipeCount: newCookbook.recipe_count || 0,
+        previewImages: [],
+        is_owner: true,
+        owner_id: newCookbook.owner_id,
+      };
+      setCookbooks([...cookbooks, transformed]);
+    } catch (error: any) {
+      console.error('Failed to create cookbook:', error);
+      throw error;
+    }
   };
 
-  const handleRenameCookbook = (id: string, newTitle: string) => {
-    setCookbooks(cookbooks.map(cb => 
-      cb.id === id ? { ...cb, title: newTitle } : cb
-    ));
+  const handleToggleCookbookVisibility = async (id: string, visibility: 'PRIVATE' | 'PUBLIC') => {
+    try {
+      await cookbookAPI.updateCookbook(id, { visibility });
+      // Update local state immediately for better UX
+      setCookbooks(cookbooks.map(cb => 
+        cb.id === id ? { ...cb, visibility } : cb
+      ));
+      // Refresh cookbooks to get latest data from backend
+      try {
+        const data = await cookbookAPI.listCookbooks();
+        const allCookbooks: Cookbook[] = [
+          ...(data.owned || []).map((cb: any) => ({
+            id: cb.id,
+            title: cb.title,
+            description: cb.description,
+            visibility: cb.visibility,
+            recipe_count: cb.recipe_count || 0,
+            recipeCount: cb.recipe_count || 0,
+            previewImages: [],
+            is_owner: true,
+            owner_id: cb.owner_id,
+          })),
+          ...(data.saved || []).map((cb: any) => ({
+            id: cb.id,
+            title: cb.title,
+            description: cb.description,
+            visibility: cb.visibility,
+            recipe_count: cb.recipe_count || 0,
+            recipeCount: cb.recipe_count || 0,
+            previewImages: [],
+            is_owner: false,
+            owner_id: cb.owner_id,
+            saved_at: cb.saved_at,
+          })),
+        ];
+        // Populate preview images from current recipes state if available
+        if (recipes && recipes.length > 0) {
+          const cookbooksWithImages = allCookbooks.map((cb) => {
+            const recipeIds = recipes.filter((r) => r.cookbookIds?.includes(cb.id)).map((r) => r.id);
+            const previewImages = recipes
+              .filter((r) => recipeIds.includes(r.id) && r.thumbnail)
+              .slice(0, 4)
+              .map((r) => r.thumbnail!);
+            return { ...cb, previewImages };
+          });
+          setCookbooks(cookbooksWithImages);
+        } else {
+          setCookbooks(allCookbooks);
+        }
+      } catch (refreshError) {
+        console.error('Failed to refresh cookbooks after toggle:', refreshError);
+        // Already updated local state, so this is okay
+      }
+    } catch (error: any) {
+      console.error('Failed to toggle cookbook visibility:', error);
+      alert('Failed to update cookbook visibility. Please try again.');
+    }
   };
 
-  const handleDeleteCookbook = (id: string) => {
-    // Remove cookbook from recipes
-    setRecipes(recipes.map(r => ({
-      ...r,
-      cookbookIds: (r.cookbookIds || []).filter(cbId => cbId !== id)
-    })));
-    setCookbooks(cookbooks.filter(c => c.id !== id));
+  const handleRenameCookbook = async (id: string, newTitle: string) => {
+    try {
+      await cookbookAPI.updateCookbook(id, { title: newTitle });
+      setCookbooks(cookbooks.map(cb => 
+        cb.id === id ? { ...cb, title: newTitle } : cb
+      ));
+    } catch (error: any) {
+      console.error('Failed to rename cookbook:', error);
+      throw error;
+    }
+  };
+
+  const handleDeleteCookbook = async (id: string) => {
+    try {
+      await cookbookAPI.deleteCookbook(id);
+      // Remove cookbook from recipes
+      setRecipes(recipes.map(r => ({
+        ...r,
+        cookbookIds: (r.cookbookIds || []).filter(cbId => cbId !== id)
+      })));
+      setCookbooks(cookbooks.filter(c => c.id !== id));
+    } catch (error: any) {
+      console.error('Failed to delete cookbook:', error);
+      throw error;
+    }
   };
 
   return (
     <Cookbooks
-      cookbooks={cookbooks}
+      cookbooks={cookbooks.filter(cb => cb.is_owner)}
       onViewCookbook={handleViewCookbook}
       onDeleteCookbook={handleDeleteCookbook}
       onCreateCookbook={handleCreateCookbook}
       onRenameCookbook={handleRenameCookbook}
+      onToggleVisibility={handleToggleCookbookVisibility}
     />
   );
 }
@@ -241,8 +341,85 @@ function CookbookDetailRoute() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { recipes, cookbooks, setRecipes, setCookbooks, updateRecipeInStore } = useAppContext();
+  const [cookbook, setCookbook] = useState<Cookbook | null>(null);
+  const [cookbookRecipes, setCookbookRecipes] = useState<Recipe[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const cookbook = cookbooks.find(cb => cb.id === id);
+  const formatTimestamp = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  useEffect(() => {
+    const fetchCookbook = async () => {
+      if (!id) {
+        setLoading(false);
+        return;
+      }
+      try {
+        const cookbookData = await cookbookAPI.getCookbook(id);
+        const transformed: Cookbook = {
+          id: cookbookData.id,
+          title: cookbookData.title,
+          description: cookbookData.description,
+          visibility: cookbookData.visibility,
+          recipe_count: cookbookData.recipe_count || 0,
+          recipeCount: cookbookData.recipe_count || 0,
+          recipe_ids: cookbookData.recipe_ids || [],
+          previewImages: [],
+          is_owner: cookbookData.is_owner,
+          owner_id: cookbookData.owner_id,
+        };
+        setCookbook(transformed);
+
+        // Fetch recipes for this cookbook
+        if (cookbookData.recipe_ids && cookbookData.recipe_ids.length > 0) {
+          const recipePromises = cookbookData.recipe_ids.map((recipeId: string) =>
+            recipeAPI.getRecipe(recipeId).catch(() => null)
+          );
+          const recipeResults = await Promise.all(recipePromises);
+          const validRecipes = recipeResults
+            .filter((r): r is any => r !== null)
+            .map((r: any) => ({
+              id: r.id,
+              title: r.title,
+              description: r.description || '',
+              source_type: r.source_type,
+              source_ref: r.source_ref,
+              youtubeUrl: r.source_type === 'youtube' ? r.source_ref : undefined,
+              cookbookIds: [id], // This recipe belongs to this cookbook
+              ingredients: Array.isArray(r.ingredients)
+                ? r.ingredients.map((ing: any) => ({
+                    qty: String(ing.qty),
+                    unit: String(ing.unit),
+                    item: String(ing.item),
+                  }))
+                : [],
+              steps: r.steps.map((step: any) => ({
+                text: step.text,
+                timestamp: step.timestamp_sec > 0 ? formatTimestamp(step.timestamp_sec) : undefined,
+                timestamp_sec: step.timestamp_sec,
+                index: step.index,
+              })),
+              createdAt: r.created_at,
+              userId: r.owner_id,
+              owner_id: r.owner_id,
+            }));
+          setCookbookRecipes(validRecipes);
+        } else {
+          setCookbookRecipes([]);
+        }
+      } catch (error) {
+        console.error('Failed to fetch cookbook:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchCookbook();
+  }, [id]);
+
+  if (loading) return <div className="p-8">Loading...</div>;
   if (!cookbook) return <div className="p-8">Cookbook not found</div>;
 
   const handleViewRecipe = (recipe: Recipe) => {
@@ -257,59 +434,70 @@ function CookbookDetailRoute() {
     updateRecipeInStore(updatedRecipe);
   };
 
-  const handleMoveToCookbook = (recipeId: string, cookbookId: string | null) => {
-    setRecipes(recipes.map(r => {
-      if (r.id === recipeId) {
-        const currentCookbookIds = r.cookbookIds || [];
-        return { ...r, cookbookIds: cookbookId ? [cookbookId] : currentCookbookIds.filter(id => id !== cookbook.id) };
+  const handleMoveToCookbook = async (recipeId: string, cookbookIds: string[]) => {
+    try {
+      await cookbookAPI.setRecipeCookbooks(recipeId, cookbookIds);
+      // Refresh cookbook recipes
+      if (id) {
+        const cookbookData = await cookbookAPI.getCookbook(id);
+        if (cookbookData.recipe_ids && cookbookData.recipe_ids.length > 0) {
+          const recipePromises = cookbookData.recipe_ids.map((rid: string) =>
+            recipeAPI.getRecipe(rid).catch(() => null)
+          );
+          const recipeResults = await Promise.all(recipePromises);
+          const validRecipes = recipeResults
+            .filter((r): r is any => r !== null)
+            .map((r: any) => ({
+              id: r.id,
+              title: r.title,
+              description: r.description || '',
+              source_type: r.source_type,
+              source_ref: r.source_ref,
+              youtubeUrl: r.source_type === 'youtube' ? r.source_ref : undefined,
+              cookbookIds: [id],
+              ingredients: Array.isArray(r.ingredients)
+                ? r.ingredients.map((ing: any) => ({
+                    qty: String(ing.qty),
+                    unit: String(ing.unit),
+                    item: String(ing.item),
+                  }))
+                : [],
+              steps: r.steps.map((step: any) => ({
+                text: step.text,
+                timestamp: step.timestamp_sec > 0 ? formatTimestamp(step.timestamp_sec) : undefined,
+                timestamp_sec: step.timestamp_sec,
+                index: step.index,
+              })),
+              createdAt: r.created_at,
+              userId: r.owner_id,
+              owner_id: r.owner_id,
+            }));
+          setCookbookRecipes(validRecipes);
+        } else {
+          setCookbookRecipes([]);
+        }
       }
-      return r;
-    }));
-    
-    if (cookbookId && cookbookId !== cookbook.id) {
-      const recipe = recipes.find(r => r.id === recipeId);
-      if (recipe) {
-        const recipeCookbookIds = recipe.cookbookIds || [];
-        setCookbooks(cookbooks.map(cb => {
-          if (cb.id === cookbookId && !recipeCookbookIds.includes(cookbookId)) {
-            return { ...cb, recipeCount: cb.recipeCount + 1, previewImages: [...cb.previewImages.slice(0, 3), recipe.thumbnail || ''].filter(Boolean) };
-          }
-          if (cb.id === cookbook.id && recipeCookbookIds.includes(cookbook.id)) {
-            return { ...cb, recipeCount: Math.max(0, cb.recipeCount - 1), previewImages: cb.previewImages.filter(img => img !== recipe.thumbnail) };
-          }
-          return cb;
-        }));
-      }
+    } catch (error: any) {
+      console.error('Failed to update recipe cookbooks:', error);
     }
-  };
-
-  const handleTogglePrivacy = (recipeId: string) => {
-    setRecipes(recipes.map(r => 
-      r.id === recipeId ? { ...r, isPublic: !r.isPublic } : r
-    ));
   };
 
   return (
     <MyRecipes
-      recipes={recipes.filter(r => (r.cookbookIds || []).includes(cookbook.id))}
+      recipes={cookbookRecipes}
       cookbooks={cookbooks}
       onViewRecipe={handleViewRecipe}
       onStartCook={handleStartCook}
-      onDeleteRecipe={(id) => {
-        const recipe = recipes.find(r => r.id === id);
-        if (recipe) {
-          const recipeCookbookIds = recipe.cookbookIds || [];
-          setCookbooks(cookbooks.map(cb => ({
-            ...cb,
-            recipeCount: cb.recipeCount - (recipeCookbookIds.includes(cb.id) ? 1 : 0),
-            previewImages: cb.previewImages.filter(img => img !== recipe.thumbnail)
-          })));
+      onDeleteRecipe={async (id) => {
+        try {
+          await recipeAPI.deleteRecipe(id);
+          setCookbookRecipes(cookbookRecipes.filter(r => r.id !== id));
+        } catch (error) {
+          console.error('Failed to delete recipe:', error);
         }
-        setRecipes(recipes.filter(r => r.id !== id));
       }}
       onUpdateRecipe={handleUpdateRecipe}
       onMoveToCookbook={handleMoveToCookbook}
-      onTogglePrivacy={handleTogglePrivacy}
       cookbookTitle={cookbook.title}
       onBack={() => navigate('/cookbooks')}
     />
@@ -388,37 +576,40 @@ function ProfileRoute() {
 function RecipeDetailRoute() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { cookbooks, updateRecipeInStore } = useAppContext();
+  const { cookbooks, updateRecipeInStore, setCookbooks, setRecipes, recipes } = useAppContext();
   const [recipe, setRecipe] = useState<Recipe | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchRecipe = async () => {
       try {
-        const data = await recipeAPI.getRecipe(id!);
+        const [recipeData, cookbookIds] = await Promise.all([
+          recipeAPI.getRecipe(id!),
+          cookbookAPI.getRecipeCookbooks(id!).catch(() => []) // Get cookbook membership
+        ]);
         // Transform backend format to frontend format
         const transformed: Recipe = {
-          id: data.id,
-          title: data.title,
-          description: data.description || '',
-          isPublic: data.is_public,
-          source_type: data.source_type,
-          source_ref: data.source_ref,
-          youtubeUrl: data.source_type === 'youtube' ? data.source_ref : undefined,
-          ingredients: Array.isArray(data.ingredients)
-            ? data.ingredients.map((ing: any) => ({
+          id: recipeData.id,
+          title: recipeData.title,
+          description: recipeData.description || '',
+          source_type: recipeData.source_type,
+          source_ref: recipeData.source_ref,
+          youtubeUrl: recipeData.source_type === 'youtube' ? recipeData.source_ref : undefined,
+          cookbookIds: cookbookIds, // Set current cookbook membership
+          ingredients: Array.isArray(recipeData.ingredients)
+            ? recipeData.ingredients.map((ing: any) => ({
                 qty: String(ing.qty),
                 unit: String(ing.unit),
                 item: String(ing.item),
               }))
             : [],
-          steps: data.steps.map((step: any) => ({
+          steps: recipeData.steps.map((step: any) => ({
             text: step.text,
             timestamp: step.timestamp_sec > 0 ? formatTimestamp(step.timestamp_sec) : undefined,
             timestamp_sec: step.timestamp_sec,
             index: step.index,
           })),
-          createdAt: data.created_at,
+          createdAt: recipeData.created_at,
         };
         setRecipe(transformed);
       } catch (error) {
@@ -452,16 +643,49 @@ function RecipeDetailRoute() {
     updateRecipeInStore(updatedRecipe);
   };
 
-  const handleSaveToCookbook = (recipeId: string, cookbookId: string | null) => {
-    // TODO: Implement backend API for cookbook assignment
-    // For now, just log
-    console.log('Save to cookbook not yet implemented', { recipeId, cookbookId });
-  };
-
-  const handleTogglePrivacy = (recipeId: string) => {
-    // TODO: Implement backend API for privacy toggle
-    // For now, just log
-    console.log('Toggle privacy not yet implemented', { recipeId });
+  const handleSaveToCookbook = async (recipeId: string, cookbookIds: string[]) => {
+    try {
+      await cookbookAPI.setRecipeCookbooks(recipeId, cookbookIds);
+      // Update local state
+      setRecipes(prev => prev.map(r => 
+        r.id === recipeId ? { ...r, cookbookIds } : r
+      ));
+      // Update recipe in detail view if it's the current recipe
+      if (recipe && recipe.id === recipeId) {
+        setRecipe({ ...recipe, cookbookIds });
+      }
+      // Refresh cookbooks to update counts
+      const data = await cookbookAPI.listCookbooks();
+      const allCookbooks: Cookbook[] = [
+        ...(data.owned || []).map((cb: any) => ({
+          id: cb.id,
+          title: cb.title,
+          description: cb.description,
+          visibility: cb.visibility,
+          recipe_count: cb.recipe_count || 0,
+          recipeCount: cb.recipe_count || 0,
+          previewImages: [],
+          is_owner: true,
+          owner_id: cb.owner_id,
+        })),
+        ...(data.saved || []).map((cb: any) => ({
+          id: cb.id,
+          title: cb.title,
+          description: cb.description,
+          visibility: cb.visibility,
+          recipe_count: cb.recipe_count || 0,
+          recipeCount: cb.recipe_count || 0,
+          previewImages: [],
+          is_owner: false,
+          owner_id: cb.owner_id,
+          saved_at: cb.saved_at,
+        })),
+      ];
+      setCookbooks(allCookbooks);
+    } catch (error: any) {
+      console.error('Failed to save recipe to cookbooks:', error);
+      throw error;
+    }
   };
 
   return (
@@ -471,8 +695,7 @@ function RecipeDetailRoute() {
       onBack={() => navigate('/')}
       onUpdateRecipe={handleUpdateRecipe}
       onSaveToCookbook={handleSaveToCookbook}
-      onTogglePrivacy={handleTogglePrivacy}
-      cookbooks={cookbooks}
+      cookbooks={cookbooks.filter(cb => cb.is_owner)}
     />
   );
 }
@@ -496,7 +719,6 @@ function CookModeRoute() {
           id: data.id,
           title: data.title,
           description: data.description || '',
-          isPublic: data.is_public,
           source_type: data.source_type,
           source_ref: data.source_ref,
           youtubeUrl: data.source_type === 'youtube' ? data.source_ref : undefined,
@@ -559,25 +781,57 @@ function App() {
   // All state hooks must be declared before any conditional returns
   const [recipes, setRecipes] = useState<Recipe[]>([]);
 
-  const [cookbooks, setCookbooks] = useState<Cookbook[]>([
-    {
-      id: 'cb1',
-      title: 'Weeknight Dinners',
-      recipeCount: 2,
-      previewImages: [
-        'https://images.unsplash.com/photo-1739417083034-4e9118f487be?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxwYXN0YSUyMGRpc2glMjBpdGFsaWFufGVufDF8fHx8MTc2NjAwNjYyNnww&ixlib=rb-4.1.0&q=80&w=1080',
-        'https://images.unsplash.com/photo-1607257882338-70f7dd2ae344?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxkZXNzZXJ0JTIwY2hvY29sYXRlJTIwY2FrZXxlbnwxfHx8fDE3NjU5NTQxNTl8MA&ixlib=rb-4.1.0&q=80&w=1080',
-      ],
-    },
-    {
-      id: 'cb2',
-      title: 'Healthy Bowls',
-      recipeCount: 1,
-      previewImages: [
-        'https://images.unsplash.com/photo-1624340209404-4f479dd59708?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxoZWFsdGh5JTIwc2FsYWQlMjBib3dsfGVufDF8fHx8MTc2NjAzMjI4OXww&ixlib=rb-4.1.0&q=80&w=1080',
-      ],
-    },
-  ]);
+  const [cookbooks, setCookbooks] = useState<Cookbook[]>([]);
+
+  // Fetch cookbooks from backend
+  const fetchCookbooks = async () => {
+    try {
+      console.log('Fetching cookbooks from backend...');
+      const data = await cookbookAPI.listCookbooks();
+      
+      // Transform backend format to frontend format
+      const allCookbooks: Cookbook[] = [
+        ...(data.owned || []).map((cb: any) => ({
+          id: cb.id,
+          title: cb.title,
+          description: cb.description,
+          visibility: cb.visibility,
+          recipe_count: cb.recipe_count || 0,
+          recipeCount: cb.recipe_count || 0,
+          previewImages: [], // Will be populated from recipes
+          is_owner: true,
+          owner_id: cb.owner_id,
+        })),
+        ...(data.saved || []).map((cb: any) => ({
+          id: cb.id,
+          title: cb.title,
+          description: cb.description,
+          visibility: cb.visibility,
+          recipe_count: cb.recipe_count || 0,
+          recipeCount: cb.recipe_count || 0,
+          previewImages: [],
+          is_owner: false,
+          owner_id: cb.owner_id,
+          saved_at: cb.saved_at,
+        })),
+      ];
+
+      // Populate preview images from current recipes state
+      const cookbooksWithImages = allCookbooks.map((cb) => {
+        const recipeIds = recipes.filter((r) => r.cookbookIds?.includes(cb.id)).map((r) => r.id);
+        const previewImages = recipes
+          .filter((r) => recipeIds.includes(r.id) && r.thumbnail)
+          .slice(0, 4)
+          .map((r) => r.thumbnail!);
+        return { ...cb, previewImages };
+      });
+
+      setCookbooks(cookbooksWithImages);
+    } catch (error: any) {
+      console.error('Failed to fetch cookbooks:', error);
+      setCookbooks([]);
+    }
+  };
 
   const [feedPosts, setFeedPosts] = useState<FeedPost[]>([
     {
@@ -586,7 +840,6 @@ function App() {
         id: 'r4',
         title: 'Thai Green Curry',
         thumbnail: 'https://images.unsplash.com/photo-1635661988046-306631057df3?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxjb29raW5nJTIwcmVjaXBlJTIwZm9vZHxlbnwxfHx8fDE3NjU5ODIzNzN8MA&ixlib=rb-4.1.0&q=80&w=1080',
-        isPublic: true,
         duration: '35 min',
         cuisine: 'Thai',
         cookbookIds: [],
@@ -705,8 +958,8 @@ function App() {
       setIsAuthenticated(true);
       console.log('handleLogin: Successfully logged in');
       
-      // Fetch recipes after successful login
-      await fetchRecipes();
+      // Fetch recipes and cookbooks after successful login
+      await Promise.all([fetchRecipes(), fetchCookbooks()]);
     } catch (error: any) {
       console.error('handleLogin: Failed to get user after login:', error);
       console.error('handleLogin: Error details:', {
@@ -738,15 +991,28 @@ function App() {
         isUUID: backendRecipes[0]?.id?.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i) !== null,
       });
 
+      // Fetch cookbook membership for each recipe
+      const recipesWithCookbooks = await Promise.all(
+        backendRecipes.map(async (r: any) => {
+          try {
+            const cookbookIds = await cookbookAPI.getRecipeCookbooks(r.id);
+            return { ...r, cookbookIds };
+          } catch (error) {
+            // If fetching cookbooks fails, just return empty array
+            return { ...r, cookbookIds: [] };
+          }
+        })
+      );
+
       // Transform backend format to frontend format
-      const transformedRecipes: Recipe[] = backendRecipes.map((r: any) => ({
+      const transformedRecipes: Recipe[] = recipesWithCookbooks.map((r: any) => ({
         id: r.id,
         title: r.title,
         description: r.description || '',
-        isPublic: r.is_public,
         source_type: r.source_type,
         source_ref: r.source_ref,
         youtubeUrl: r.source_type === 'youtube' ? r.source_ref : undefined,
+        cookbookIds: r.cookbookIds || [],
         ingredients: Array.isArray(r.ingredients)
           ? r.ingredients.map((ing: any) => ({
               qty: String(ing.qty),

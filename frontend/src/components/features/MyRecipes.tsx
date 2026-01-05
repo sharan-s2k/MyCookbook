@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Lock, Globe, MoreVertical, ChefHat, Edit, Trash2, BookOpen, Eye, EyeOff, ChevronLeft } from 'lucide-react';
+import { MoreVertical, ChefHat, Edit, Trash2, BookOpen, ChevronLeft } from 'lucide-react';
 import type { Recipe, Cookbook } from '../../types';
 import { CookbookSelectModal } from '../modals/CookbookSelectModal';
 import { EditRecipeModal } from '../modals/EditRecipeModal';
@@ -12,8 +12,7 @@ interface MyRecipesProps {
   onStartCook: (recipe: Recipe) => void;
   onDeleteRecipe: (id: string) => void;
   onUpdateRecipe?: (recipe: Recipe) => void;
-  onMoveToCookbook?: (recipeId: string, cookbookId: string | null) => void;
-  onTogglePrivacy?: (recipeId: string) => void;
+  onMoveToCookbook?: (recipeId: string, cookbookIds: string[]) => void;
   cookbookTitle?: string;
   onBack?: () => void;
 }
@@ -26,11 +25,9 @@ export function MyRecipes({
   onDeleteRecipe,
   onUpdateRecipe,
   onMoveToCookbook,
-  onTogglePrivacy,
   cookbookTitle, 
   onBack 
 }: MyRecipesProps) {
-  const [filter, setFilter] = useState<'all' | 'private' | 'public'>('all');
   const [sortBy, setSortBy] = useState<'recent' | 'cooked' | 'az'>('recent');
   const [selectedCookbook, setSelectedCookbook] = useState<string>('all');
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
@@ -39,11 +36,6 @@ export function MyRecipes({
   const [showEditModal, setShowEditModal] = useState<string | null>(null);
 
   const filteredRecipes = recipes
-    .filter(r => {
-      if (filter === 'private') return !r.isPublic;
-      if (filter === 'public') return r.isPublic;
-      return true;
-    })
     .filter(r => {
       if (selectedCookbook === 'all') return true;
       return (r.cookbookIds || []).includes(selectedCookbook);
@@ -64,9 +56,9 @@ export function MyRecipes({
       return a.title.localeCompare(b.title);
     });
 
-  const handleMoveToCookbook = (recipeId: string, cookbookId: string | null) => {
+  const handleMoveToCookbook = (recipeId: string, cookbookIds: string[]) => {
     if (onMoveToCookbook) {
-      onMoveToCookbook(recipeId, cookbookId);
+      onMoveToCookbook(recipeId, cookbookIds);
     }
     setShowCookbookSelect(null);
   };
@@ -83,12 +75,6 @@ export function MyRecipes({
     setShowEditModal(null);
   };
 
-  const handleTogglePrivacy = (recipeId: string) => {
-    if (onTogglePrivacy) {
-      onTogglePrivacy(recipeId);
-    }
-    setMenuOpen(null);
-  };
 
   return (
     <div className="p-4 md:p-8">
@@ -104,16 +90,6 @@ export function MyRecipes({
       )}
 
       <div className="mb-6 flex flex-col sm:flex-row items-stretch sm:items-center gap-3 sm:gap-4 flex-wrap">
-        <select
-          value={filter}
-          onChange={(e) => setFilter(e.target.value as any)}
-          className="px-4 py-2 bg-white border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 text-sm md:text-base"
-        >
-          <option value="all">All recipes</option>
-          <option value="private">Private only</option>
-          <option value="public">Public only</option>
-        </select>
-
         <select
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value as any)}
@@ -131,7 +107,7 @@ export function MyRecipes({
             className="px-4 py-2 bg-white border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 text-sm md:text-base"
           >
             <option value="all">All cookbooks</option>
-            {cookbooks.map(cb => (
+            {cookbooks.filter(cb => cb.is_owner).map(cb => (
               <option key={cb.id} value={cb.id}>{cb.title}</option>
             ))}
           </select>
@@ -165,19 +141,6 @@ export function MyRecipes({
                       target.src = '/default_recipe.jpg';
                     }}
                   />
-                  <div className="absolute top-2 left-2 md:top-3 md:left-3">
-                    {recipe.isPublic ? (
-                      <div className="bg-white/90 backdrop-blur-sm px-2 py-1 rounded-md flex items-center gap-1">
-                        <Globe className="w-3 h-3 text-blue-600" />
-                        <span className="text-xs text-blue-600">Public</span>
-                      </div>
-                    ) : (
-                      <div className="bg-white/90 backdrop-blur-sm px-2 py-1 rounded-md flex items-center gap-1">
-                        <Lock className="w-3 h-3 text-gray-600" />
-                        <span className="text-xs text-gray-600">Private</span>
-                      </div>
-                    )}
-                  </div>
                   
                   <div className="absolute top-2 right-2 md:top-3 md:right-3">
                     <button
@@ -219,17 +182,7 @@ export function MyRecipes({
                             className="w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center gap-2 text-gray-700"
                           >
                             <BookOpen className="w-4 h-4" />
-                            Move to cookbook
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleTogglePrivacy(recipe.id);
-                            }}
-                            className="w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center gap-2 text-gray-700"
-                          >
-                            {recipe.isPublic ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                            Make {recipe.isPublic ? 'private' : 'public'}
+                            Save to cookbook
                           </button>
                           <div className="border-t border-gray-100 my-2"></div>
                           <button
@@ -308,10 +261,11 @@ export function MyRecipes({
       {/* Cookbook select modal */}
       {showCookbookSelect && (
         <CookbookSelectModal
-          cookbooks={cookbooks}
-          onSelect={(cookbookId) => handleMoveToCookbook(showCookbookSelect, cookbookId)}
+          cookbooks={cookbooks.filter(cb => cb.is_owner)}
+          selectedCookbookIds={recipes.find(r => r.id === showCookbookSelect)?.cookbookIds || []}
+          onSelect={(cookbookIds) => handleMoveToCookbook(showCookbookSelect, cookbookIds)}
           onClose={() => setShowCookbookSelect(null)}
-          title="Move to cookbook"
+          title="Save to cookbook"
           allowNew={false}
         />
       )}

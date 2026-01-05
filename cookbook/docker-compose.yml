@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  cookbook-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: cookbook_db
+      POSTGRES_USER: cookbook_user
+      POSTGRES_PASSWORD: cookbook_pass
+    ports:
+      - "5436:5432"
+    volumes:
+      - cookbook-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cookbook_user -d cookbook_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  cookbook:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      cookbook-db:
+        condition: service_healthy
+    expose:
+      - "8006"
+    environment:
+      PORT: 8006
+      DATABASE_URL: postgres://cookbook_user:cookbook_pass@cookbook-db:5432/cookbook_db
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+      GATEWAY_TOKEN: ${GATEWAY_TOKEN:-${SERVICE_TOKEN:-dev-service-token}}
+      RECIPE_SERVICE_URL: ${RECIPE_SERVICE_URL:-http://recipe:8003}
+    volumes:
+      - .:/app
+      - /app/node_modules
+
+volumes:
+  cookbook-db-data:

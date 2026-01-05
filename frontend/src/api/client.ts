@@ -312,7 +312,6 @@ export const recipeAPI = {
   async updateRecipe(recipeId: string, updates: {
     title?: string;
     description?: string | null;
-    is_public?: boolean;
     ingredients?: any;
     steps?: any;
   }) {
@@ -323,6 +322,25 @@ export const recipeAPI = {
 
     if (!response.ok) {
       let errorMessage = 'Failed to update recipe';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
+
+  async deleteRecipe(recipeId: string) {
+    const response = await fetchWithAuth(`/recipes/${recipeId}`, {
+      method: 'DELETE',
+    });
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to delete recipe';
       try {
         const error = await response.json();
         errorMessage = error.error?.message || errorMessage;
@@ -384,6 +402,177 @@ export const userAPI = {
 
     if (!response.ok) {
       let errorMessage = 'Failed to get user';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
+};
+
+// Cookbook API
+export const cookbookAPI = {
+  async listCookbooks() {
+    const response = await fetchWithAuth('/cookbooks');
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to list cookbooks';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
+
+  async createCookbook(title: string, description?: string, visibility: 'PRIVATE' | 'PUBLIC' = 'PRIVATE') {
+    const response = await fetchWithAuth('/cookbooks', {
+      method: 'POST',
+      body: JSON.stringify({ title, description, visibility }),
+    });
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to create cookbook';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
+
+  async getCookbook(cookbookId: string) {
+    const response = await fetchWithAuth(`/cookbooks/${cookbookId}`);
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to get cookbook';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
+
+  async updateCookbook(cookbookId: string, updates: { title?: string; description?: string; visibility?: 'PRIVATE' | 'PUBLIC' }) {
+    const response = await fetchWithAuth(`/cookbooks/${cookbookId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    });
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to update cookbook';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
+
+  async deleteCookbook(cookbookId: string) {
+    const response = await fetchWithAuth(`/cookbooks/${cookbookId}`, {
+      method: 'DELETE',
+    });
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to delete cookbook';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
+
+  async saveCookbook(cookbookId: string) {
+    const response = await fetchWithAuth(`/cookbooks/${cookbookId}/save`, {
+      method: 'POST',
+    });
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to save cookbook';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
+
+  async unsaveCookbook(cookbookId: string) {
+    const response = await fetchWithAuth(`/cookbooks/${cookbookId}/save`, {
+      method: 'DELETE',
+    });
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to unsave cookbook';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
+
+  async setRecipeCookbooks(recipeId: string, cookbookIds: string[]) {
+    const response = await fetchWithAuth(`/cookbooks/recipes/${recipeId}/cookbooks`, {
+      method: 'POST',
+      body: JSON.stringify({ cookbook_ids: cookbookIds }),
+    });
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to update recipe cookbooks';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
+
+  async getRecipeCookbooks(recipeId: string) {
+    const response = await fetchWithAuth(`/cookbooks/recipes/${recipeId}/cookbooks`);
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to get recipe cookbooks';
       try {
         const error = await response.json();
         errorMessage = error.error?.message || errorMessage;

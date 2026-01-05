@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChefHat, Edit, BookOpen, Lock, Globe, Play, ChevronLeft } from 'lucide-react';
+import { ChefHat, Edit, BookOpen, Play, ChevronLeft } from 'lucide-react';
 import type { Recipe } from '../../types';
 import { CookbookSelectModal } from '../modals/CookbookSelectModal';
 import { EditRecipeModal } from '../modals/EditRecipeModal';
@@ -10,8 +10,7 @@ interface RecipeDetailProps {
   onStartCookMode: () => void;
   onBack: () => void;
   onUpdateRecipe?: (recipe: Recipe) => void;
-  onSaveToCookbook?: (recipeId: string, cookbookId: string | null) => void;
-  onTogglePrivacy?: (recipeId: string) => void;
+  onSaveToCookbook?: (recipeId: string, cookbookIds: string[]) => void;
   cookbooks?: Array<{ id: string; title: string; recipeCount: number; previewImages: string[] }>;
 }
 
@@ -21,10 +20,8 @@ export function RecipeDetail({
   onBack,
   onUpdateRecipe,
   onSaveToCookbook,
-  onTogglePrivacy,
   cookbooks = []
 }: RecipeDetailProps) {
-  const [isPublic, setIsPublic] = useState(recipe.isPublic);
   const [showCookbookSelect, setShowCookbookSelect] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
 
@@ -33,16 +30,9 @@ export function RecipeDetail({
     .slice(0, 3)
     .map(s => ({ text: s.text, timestamp: s.timestamp }));
 
-  const handleTogglePrivacy = () => {
-    setIsPublic(!isPublic);
-    if (onTogglePrivacy) {
-      onTogglePrivacy(recipe.id);
-    }
-  };
-
-  const handleSaveToCookbook = (cookbookId: string | null) => {
+  const handleSaveToCookbook = (cookbookIds: string[]) => {
     if (onSaveToCookbook) {
-      onSaveToCookbook(recipe.id, cookbookId);
+      onSaveToCookbook(recipe.id, cookbookIds);
     }
     setShowCookbookSelect(false);
   };
@@ -50,7 +40,6 @@ export function RecipeDetail({
   const handleSaveEdit = (updatedRecipe: Recipe) => {
     if (onUpdateRecipe) {
       onUpdateRecipe(updatedRecipe);
-      setIsPublic(updatedRecipe.isPublic);
     }
     setShowEditModal(false);
   };
@@ -98,23 +87,8 @@ export function RecipeDetail({
               <p className="text-gray-600 mb-4 text-sm md:text-base">{recipe.description}</p>
               
               <div className="flex flex-wrap items-center gap-3 md:gap-4 text-xs md:text-sm text-gray-500">
-                <span>{recipe.duration}</span>
-                <span>•</span>
-                <span>{recipe.cuisine}</span>
-                <span>•</span>
-                <div className="flex items-center gap-1">
-                  {isPublic ? (
-                    <>
-                      <Globe className="w-4 h-4 text-blue-600" />
-                      <span className="text-blue-600">Public</span>
-                    </>
-                  ) : (
-                    <>
-                      <Lock className="w-4 h-4 text-gray-600" />
-                      <span>Private</span>
-                    </>
-                  )}
-                </div>
+                {recipe.duration && <><span>{recipe.duration}</span><span>•</span></>}
+                {recipe.cuisine && <><span>{recipe.cuisine}</span></>}
               </div>
             </div>
 
@@ -144,23 +118,6 @@ export function RecipeDetail({
                   <span className="sm:hidden">Save</span>
                 </button>
               </div>
-
-              <button
-                onClick={handleTogglePrivacy}
-                className="w-full border border-gray-200 hover:bg-gray-50 text-gray-700 px-3 md:px-4 py-2 rounded-lg transition-colors flex items-center justify-center gap-2 text-sm md:text-base"
-              >
-                {isPublic ? (
-                  <>
-                    <Lock className="w-4 h-4" />
-                    Make private
-                  </>
-                ) : (
-                  <>
-                    <Globe className="w-4 h-4" />
-                    Make public
-                  </>
-                )}
-              </button>
             </div>
           </div>
         </div>
@@ -237,6 +194,7 @@ export function RecipeDetail({
       {showCookbookSelect && (
         <CookbookSelectModal
           cookbooks={cookbooks}
+          selectedCookbookIds={recipe.cookbookIds || []}
           onSelect={handleSaveToCookbook}
           onClose={() => setShowCookbookSelect(false)}
           title="Save to cookbook"

@@ -15,6 +15,7 @@ const KAFKA_BROKERS = KAFKA_BROKERS_STR.includes(',')
 const KAFKA_TOPIC_JOBS = process.env.KAFKA_TOPIC_JOBS!;
 const SERVICE_TOKEN = process.env.SERVICE_TOKEN!;
 const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || SERVICE_TOKEN; // Gateway token (same as SERVICE_TOKEN for MVP)
+const COOKBOOK_SERVICE_URL = process.env.COOKBOOK_SERVICE_URL || 'http://cookbook:8006';
 
 const pool = new Pool({ connectionString: DATABASE_URL });
 
@@ -330,7 +331,7 @@ fastify.get('/', { preHandler: extractUserId }, async (request, reply) => {
   const client = await pool.connect();
   try {
     const result = await client.query(
-      `SELECT id, title, description, is_public, source_type, source_ref, status,
+      `SELECT id, title, description, source_type, source_ref, status,
               ingredients, steps, created_at, updated_at
        FROM recipes
        WHERE owner_id = $1
@@ -344,7 +345,6 @@ fastify.get('/', { preHandler: extractUserId }, async (request, reply) => {
       id: recipe.id,
       title: recipe.title,
       description: recipe.description,
-      is_public: recipe.is_public,
       source_type: recipe.source_type,
       source_ref: recipe.source_ref,
       ingredients: recipe.ingredients,
@@ -388,7 +388,7 @@ fastify.get('/:recipe_id', { preHandler: extractUserId }, async (request, reply)
   const client = await pool.connect();
   try {
     const result = await client.query(
-      `SELECT id, owner_id, title, description, is_public, source_type, source_ref, status,
+      `SELECT id, owner_id, title, description, source_type, source_ref, status,
               ingredients, steps, created_at, updated_at
        FROM recipes WHERE id = $1`,
       [recipe_id]
@@ -421,7 +421,6 @@ fastify.get('/:recipe_id', { preHandler: extractUserId }, async (request, reply)
       id: recipe.id,
       title: recipe.title,
       description: recipe.description,
-      is_public: recipe.is_public,
       source_type: recipe.source_type,
       source_ref: recipe.source_ref,
       ingredients: recipe.ingredients,
@@ -463,7 +462,6 @@ fastify.patch('/:recipe_id', { preHandler: extractUserId }, async (request, repl
   const body = request.body as {
     title?: string;
     description?: string;
-    is_public?: boolean;
     ingredients?: any;
     steps?: any;
   };
@@ -518,11 +516,6 @@ fastify.patch('/:recipe_id', { preHandler: extractUserId }, async (request, repl
     if (body.description !== undefined) {
       updates.push(`description = $${paramIndex++}`);
       values.push(body.description || null);
-    }
-
-    if (body.is_public !== undefined) {
-      updates.push(`is_public = $${paramIndex++}`);
-      values.push(body.is_public);
     }
 
     if (body.ingredients !== undefined) {
@@ -610,7 +603,7 @@ fastify.patch('/:recipe_id', { preHandler: extractUserId }, async (request, repl
       UPDATE recipes 
       SET ${updates.join(', ')} 
       WHERE id = $${paramIndex}
-      RETURNING id, owner_id, title, description, is_public, source_type, source_ref, status,
+      RETURNING id, owner_id, title, description, source_type, source_ref, status,
                 ingredients, steps, created_at, updated_at
     `;
 
@@ -621,7 +614,6 @@ fastify.patch('/:recipe_id', { preHandler: extractUserId }, async (request, repl
       id: recipe.id,
       title: recipe.title,
       description: recipe.description,
-      is_public: recipe.is_public,
       source_type: recipe.source_type,
       source_ref: recipe.source_ref,
       ingredients: recipe.ingredients,
@@ -987,8 +979,8 @@ fastify.post(
 
       // Create recipe - ingredients should already be array of objects from AI orchestrator
       await client.query(
-        `INSERT INTO recipes (id, owner_id, title, description, is_public, source_type, source_ref, status, ingredients, steps)
-         VALUES ($1, $2, $3, $4, false, 'youtube', $5, 'READY', $6::jsonb, $7::jsonb)`,
+        `INSERT INTO recipes (id, owner_id, title, description, source_type, source_ref, status, ingredients, steps)
+         VALUES ($1, $2, $3, $4, 'youtube', $5, 'READY', $6::jsonb, $7::jsonb)`,
         [recipeId, owner_id, title, description || null, source_ref, JSON.stringify(ingredients), JSON.stringify(steps)]
       );
 
@@ -1122,6 +1114,84 @@ fastify.get(
     }
   }
 );
+
+// DELETE /:recipe_id (protected) - Delete recipe
+fastify.delete('/:recipe_id', { preHandler: extractUserId }, async (request, reply) => {
+  const userId = (request as any).userId;
+  const { recipe_id } = request.params as { recipe_id: string };
+
+  if (!isValidUUID(recipe_id)) {
+    return reply.code(400).send({
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid recipe id format',
+        request_id: request.id,
+      },
+    });
+  }
+
+  const client = await pool.connect();
+  try {
+    // Verify recipe exists and user owns it
+    const checkResult = await client.query(
+      `SELECT owner_id FROM recipes WHERE id = $1`,
+      [recipe_id]
+    );
+
+    if (checkResult.rows.length === 0) {
+      return reply.code(404).send({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Recipe not found',
+          request_id: request.id,
+        },
+      });
+    }
+
+    if (checkResult.rows[0].owner_id !== userId) {
+      return reply.code(403).send({
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Only owner can delete recipe',
+          request_id: request.id,
+        },
+      });
+    }
+
+    // Delete recipe (CASCADE will handle recipe_raw_source)
+    await client.query(`DELETE FROM recipes WHERE id = $1`, [recipe_id]);
+
+    // Notify cookbook service to cleanup cookbook associations
+    try {
+      const response = await fetch(`${COOKBOOK_SERVICE_URL}/internal/recipes/${recipe_id}/delete`, {
+        method: 'POST',
+        headers: {
+          'x-service-token': SERVICE_TOKEN,
+          'x-request-id': (request as any).requestId || uuidv4(),
+        },
+      });
+      if (!response.ok) {
+        fastify.log.warn({ recipe_id, status: response.status }, 'Failed to cleanup recipe from cookbooks, continuing anyway');
+      }
+    } catch (error) {
+      fastify.log.warn({ error, recipe_id }, 'Error calling cookbook service for cleanup, continuing anyway');
+      // Don't fail recipe deletion if cookbook cleanup fails
+    }
+
+    return reply.send({ success: true });
+  } catch (error) {
+    fastify.log.error({ error }, 'Failed to delete recipe');
+    return reply.code(500).send({
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to delete recipe',
+        request_id: request.id,
+      },
+    });
+  } finally {
+    client.release();
+  }
+});
 
 // Health check
 fastify.get('/health', async () => {

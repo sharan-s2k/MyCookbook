@@ -18,6 +18,7 @@ CREATE INDEX IF NOT EXISTS idx_recipe_import_jobs_created_at ON recipe_import_jo
 CREATE INDEX IF NOT EXISTS idx_recipe_import_jobs_transcript_segments ON recipe_import_jobs USING gin (transcript_segments);
 
 -- Create recipes table
+-- Note: Privacy is handled at cookbook level only, not at recipe level
 CREATE TABLE IF NOT EXISTS recipes (
   id UUID PRIMARY KEY,
   owner_id UUID NOT NULL,

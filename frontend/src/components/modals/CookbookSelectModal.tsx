@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Plus, BookOpen } from 'lucide-react';
 import type { Cookbook } from '../../types';
 
 interface CookbookSelectModalProps {
   cookbooks: Cookbook[];
-  onSelect: (cookbookId: string | null) => void;
+  selectedCookbookIds?: string[]; // Current membership
+  onSelect: (cookbookIds: string[]) => void; // Changed to array
   onClose: () => void;
   onNewCookbook?: () => void;
   title?: string;
@@ -13,16 +14,31 @@ interface CookbookSelectModalProps {
 
 export function CookbookSelectModal({ 
   cookbooks, 
+  selectedCookbookIds = [],
   onSelect, 
   onClose, 
   onNewCookbook,
-  title = 'Select Cookbook',
+  title = 'Save to Cookbooks',
   allowNew = true 
 }: CookbookSelectModalProps) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set(selectedCookbookIds));
+
+  useEffect(() => {
+    setSelectedIds(new Set(selectedCookbookIds));
+  }, [selectedCookbookIds]);
+
+  const handleToggle = (cookbookId: string) => {
+    const newSet = new Set(selectedIds);
+    if (newSet.has(cookbookId)) {
+      newSet.delete(cookbookId);
+    } else {
+      newSet.add(cookbookId);
+    }
+    setSelectedIds(newSet);
+  };
 
   const handleSelect = () => {
-    onSelect(selectedId);
+    onSelect(Array.from(selectedIds));
     onClose();
   };
 
@@ -60,32 +76,32 @@ export function CookbookSelectModal({
             </div>
           ) : (
             <div className="space-y-2">
-              <button
-                onClick={() => setSelectedId(null)}
-                className={`w-full text-left px-4 py-3 rounded-lg border-2 transition-colors ${
-                  selectedId === null
-                    ? 'border-orange-500 bg-orange-50'
-                    : 'border-gray-200 hover:border-gray-300'
-                }`}
-              >
-                <div className="font-medium text-gray-900">None (Remove from cookbook)</div>
-              </button>
-              {cookbooks.map((cookbook) => (
-                <button
-                  key={cookbook.id}
-                  onClick={() => setSelectedId(cookbook.id)}
-                  className={`w-full text-left px-4 py-3 rounded-lg border-2 transition-colors ${
-                    selectedId === cookbook.id
-                      ? 'border-orange-500 bg-orange-50'
-                      : 'border-gray-200 hover:border-gray-300'
-                  }`}
-                >
-                  <div className="font-medium text-gray-900">{cookbook.title}</div>
-                  <div className="text-sm text-gray-500 mt-1">
-                    {cookbook.recipeCount} {cookbook.recipeCount === 1 ? 'recipe' : 'recipes'}
-                  </div>
-                </button>
-              ))}
+              {cookbooks.map((cookbook) => {
+                const isSelected = selectedIds.has(cookbook.id);
+                return (
+                  <label
+                    key={cookbook.id}
+                    className={`flex items-start gap-3 w-full text-left px-4 py-3 rounded-lg border-2 transition-colors cursor-pointer ${
+                      isSelected
+                        ? 'border-orange-500 bg-orange-50'
+                        : 'border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => handleToggle(cookbook.id)}
+                      className="mt-1 w-4 h-4 text-orange-500 border-gray-300 rounded focus:ring-orange-500"
+                    />
+                    <div className="flex-1">
+                      <div className="font-medium text-gray-900">{cookbook.title}</div>
+                      <div className="text-sm text-gray-500 mt-1">
+                        {(cookbook.recipeCount || cookbook.recipe_count || 0)} {(cookbook.recipeCount || cookbook.recipe_count || 0) === 1 ? 'recipe' : 'recipes'}
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
             </div>
           )}
         </div>
@@ -101,7 +117,7 @@ export function CookbookSelectModal({
             onClick={handleSelect}
             className="flex-1 px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg transition-colors"
           >
-            Select
+            Save
           </button>
         </div>
       </div>

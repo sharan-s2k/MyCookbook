@@ -88,6 +88,22 @@ services:
       timeout: 5s
       retries: 5
 
+  cookbook-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: cookbook_db
+      POSTGRES_USER: cookbook_user
+      POSTGRES_PASSWORD: cookbook_pass
+    ports:
+      - "5436:5432"
+    volumes:
+      - cookbook-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cookbook_user -d cookbook_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   # Services
   auth:
     build:
@@ -142,6 +158,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      cookbook:
+        condition: service_started
     # Internal service - no public port exposure
     expose:
       - "8003"
@@ -152,8 +170,29 @@ services:
       KAFKA_TOPIC_JOBS: recipe.jobs
       SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
       GATEWAY_TOKEN: ${GATEWAY_TOKEN:-${SERVICE_TOKEN:-dev-service-token}}
+      COOKBOOK_SERVICE_URL: http://cookbook:8006
     volumes:
       - ./recipe:/app
+      - /app/node_modules
+
+  cookbook:
+    build:
+      context: ./cookbook
+      dockerfile: Dockerfile
+    depends_on:
+      cookbook-db:
+        condition: service_healthy
+    # Internal service - no public port exposure
+    expose:
+      - "8006"
+    environment:
+      PORT: 8006
+      DATABASE_URL: postgres://cookbook_user:cookbook_pass@cookbook-db:5432/cookbook_db
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+      GATEWAY_TOKEN: ${GATEWAY_TOKEN:-${SERVICE_TOKEN:-dev-service-token}}
+      RECIPE_SERVICE_URL: http://recipe:8003
+    volumes:
+      - ./cookbook:/app
       - /app/node_modules
 
   ai-orchestrator:
@@ -209,6 +248,8 @@ services:
         condition: service_started
       recipe:
         condition: service_started
+      cookbook:
+        condition: service_started
       ai-orchestrator:
         condition: service_started
     ports:
@@ -218,6 +259,7 @@ services:
       AUTH_URL: http://auth:8001
       USER_URL: http://user:8002
       RECIPE_URL: http://recipe:8003
+      COOKBOOK_URL: http://cookbook:8006
       AI_ORCHESTRATOR_URL: http://ai-orchestrator:8004
       JWT_PUBLIC_OR_SHARED_SECRET: ${JWT_SECRET:-dev-secret-change-in-production}
       SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
@@ -233,4 +275,5 @@ volumes:
   auth-db-data:
   user-db-data:
   recipe-db-data:
+  cookbook-db-data:
 

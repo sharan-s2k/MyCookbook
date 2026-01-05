@@ -1,28 +1,42 @@
-import React, { useState } from 'react';
-import { Plus, MoreVertical, Edit, Trash2, BookOpen, X } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { Plus, MoreVertical, Edit, Trash2, BookOpen, X, Lock, Globe, Eye, EyeOff } from 'lucide-react';
 import type { Cookbook } from '../../types';
 
 interface CookbooksProps {
   cookbooks: Cookbook[];
   onViewCookbook: (cookbook: Cookbook) => void;
   onDeleteCookbook: (id: string) => void;
-  onCreateCookbook?: (title: string) => void;
+  onCreateCookbook?: (title: string, visibility?: 'PRIVATE' | 'PUBLIC') => void;
   onRenameCookbook?: (id: string, newTitle: string) => void;
+  onToggleVisibility?: (id: string, visibility: 'PRIVATE' | 'PUBLIC') => void;
 }
 
-export function Cookbooks({ cookbooks, onViewCookbook, onDeleteCookbook, onCreateCookbook, onRenameCookbook }: CookbooksProps) {
+export function Cookbooks({ cookbooks, onViewCookbook, onDeleteCookbook, onCreateCookbook, onRenameCookbook, onToggleVisibility }: CookbooksProps) {
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
+  const [menuPosition, setMenuPosition] = useState<{ top: number; right: number } | null>(null);
+  const menuButtonRefs = useRef<Record<string, HTMLButtonElement>>({});
   const [showNewCookbook, setShowNewCookbook] = useState(false);
   const [showRenameModal, setShowRenameModal] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState('');
+  const [newVisibility, setNewVisibility] = useState<'PRIVATE' | 'PUBLIC'>('PRIVATE');
   const [renameTitle, setRenameTitle] = useState('');
 
   const handleCreateCookbook = () => {
     if (newTitle.trim() && onCreateCookbook) {
-      onCreateCookbook(newTitle.trim());
+      onCreateCookbook(newTitle.trim(), newVisibility);
       setShowNewCookbook(false);
       setNewTitle('');
+      setNewVisibility('PRIVATE');
     }
+  };
+
+  const handleToggleVisibility = (cookbook: Cookbook) => {
+    if (onToggleVisibility) {
+      const newVisibility = cookbook.visibility === 'PUBLIC' ? 'PRIVATE' : 'PUBLIC';
+      onToggleVisibility(cookbook.id, newVisibility);
+    }
+    setMenuOpen(null);
+    setMenuPosition(null);
   };
 
   const handleRenameCookbook = (id: string) => {
@@ -37,6 +51,7 @@ export function Cookbooks({ cookbooks, onViewCookbook, onDeleteCookbook, onCreat
     setRenameTitle(cookbook.title);
     setShowRenameModal(cookbook.id);
     setMenuOpen(null);
+    setMenuPosition(null);
   };
 
   return (
@@ -87,34 +102,73 @@ export function Cookbooks({ cookbooks, onViewCookbook, onDeleteCookbook, onCreat
               </div>
 
               <div className="p-4">
-                <div className="flex items-start justify-between mb-2">
+                <div className="flex items-start justify-between mb-2 relative">
                   <div className="flex-1 min-w-0">
-                    <h3 className="text-gray-900 mb-1 truncate">{cookbook.title}</h3>
+                    <div className="flex items-center gap-2 mb-1">
+                      <h3 className="text-gray-900 truncate">{cookbook.title}</h3>
+                      {cookbook.visibility === 'PUBLIC' ? (
+                        <div className="bg-blue-50 px-2 py-0.5 rounded-md flex items-center gap-1 flex-shrink-0">
+                          <Globe className="w-3 h-3 text-blue-600" />
+                          <span className="text-xs text-blue-600">Public</span>
+                        </div>
+                      ) : (
+                        <div className="bg-gray-50 px-2 py-0.5 rounded-md flex items-center gap-1 flex-shrink-0">
+                          <Lock className="w-3 h-3 text-gray-600" />
+                          <span className="text-xs text-gray-600">Private</span>
+                        </div>
+                      )}
+                    </div>
                     <p className="text-sm text-gray-500">
-                      {cookbook.recipeCount} {cookbook.recipeCount === 1 ? 'recipe' : 'recipes'}
+                      {(cookbook.recipeCount || cookbook.recipe_count || 0)} {(cookbook.recipeCount || cookbook.recipe_count || 0) === 1 ? 'recipe' : 'recipes'}
                     </p>
                   </div>
                   
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setMenuOpen(menuOpen === cookbook.id ? null : cookbook.id);
-                    }}
-                    className="p-2 hover:bg-gray-100 rounded-lg transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0"
-                  >
-                    <MoreVertical className="w-4 h-4 text-gray-600" />
-                  </button>
-
-                  {menuOpen === cookbook.id && (
-                    <>
-                      <div
-                        className="fixed inset-0 z-10"
-                        onClick={(e) => {
-                          e.stopPropagation();
+                  <div className="relative flex-shrink-0">
+                    <button
+                      ref={(el) => {
+                        if (el) menuButtonRefs.current[cookbook.id] = el;
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (menuOpen === cookbook.id) {
                           setMenuOpen(null);
-                        }}
-                      />
-                      <div className="absolute right-4 top-full mt-2 w-48 bg-white rounded-lg shadow-lg border border-gray-200 py-2 z-20">
+                          setMenuPosition(null);
+                        } else {
+                          const button = menuButtonRefs.current[cookbook.id];
+                          if (button) {
+                            const rect = button.getBoundingClientRect();
+                            setMenuPosition({
+                              top: rect.bottom + 8,
+                              right: window.innerWidth - rect.right,
+                            });
+                          }
+                          setMenuOpen(cookbook.id);
+                        }
+                      }}
+                      className="p-2 hover:bg-gray-100 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                    >
+                      <MoreVertical className="w-4 h-4 text-gray-600" />
+                    </button>
+                  </div>
+                </div>
+
+                {menuOpen === cookbook.id && menuPosition && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-10"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setMenuOpen(null);
+                        setMenuPosition(null);
+                      }}
+                    />
+                    <div
+                      className="fixed w-48 bg-white rounded-lg shadow-lg border border-gray-200 py-2 z-20"
+                      style={{
+                        top: `${menuPosition.top}px`,
+                        right: `${menuPosition.right}px`,
+                      }}
+                    >
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -125,12 +179,37 @@ export function Cookbooks({ cookbooks, onViewCookbook, onDeleteCookbook, onCreat
                           <Edit className="w-4 h-4" />
                           Rename
                         </button>
+                        {cookbook.is_owner && (
+                          <>
+                            <div className="border-t border-gray-100 my-2"></div>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleVisibility(cookbook);
+                              }}
+                              className="w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center gap-2 text-gray-700"
+                            >
+                              {cookbook.visibility === 'PUBLIC' ? (
+                                <>
+                                  <EyeOff className="w-4 h-4" />
+                                  Make private
+                                </>
+                              ) : (
+                                <>
+                                  <Eye className="w-4 h-4" />
+                                  Make public
+                                </>
+                              )}
+                            </button>
+                          </>
+                        )}
                         <div className="border-t border-gray-100 my-2"></div>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             onDeleteCookbook(cookbook.id);
                             setMenuOpen(null);
+                            setMenuPosition(null);
                           }}
                           className="w-full px-4 py-2 text-left hover:bg-red-50 flex items-center gap-2 text-red-600"
                         >
@@ -139,8 +218,7 @@ export function Cookbooks({ cookbooks, onViewCookbook, onDeleteCookbook, onCreat
                         </button>
                       </div>
                     </>
-                  )}
-                </div>
+                )}
 
                 <button
                   onClick={(e) => {
@@ -183,9 +261,38 @@ export function Cookbooks({ cookbooks, onViewCookbook, onDeleteCookbook, onCreat
                   handleCreateCookbook();
                 }
               }}
-              className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 mb-6"
+              className="w-full px-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 mb-4"
               autoFocus
             />
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-2">Visibility</label>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setNewVisibility('PRIVATE')}
+                  className={`flex-1 px-4 py-2 rounded-lg border-2 transition-colors flex items-center justify-center gap-2 ${
+                    newVisibility === 'PRIVATE'
+                      ? 'border-orange-500 bg-orange-50 text-orange-700'
+                      : 'border-gray-200 hover:border-gray-300 text-gray-700'
+                  }`}
+                >
+                  <Lock className="w-4 h-4" />
+                  Private
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setNewVisibility('PUBLIC')}
+                  className={`flex-1 px-4 py-2 rounded-lg border-2 transition-colors flex items-center justify-center gap-2 ${
+                    newVisibility === 'PUBLIC'
+                      ? 'border-orange-500 bg-orange-50 text-orange-700'
+                      : 'border-gray-200 hover:border-gray-300 text-gray-700'
+                  }`}
+                >
+                  <Globe className="w-4 h-4" />
+                  Public
+                </button>
+              </div>
+            </div>
             <div className="flex gap-3">
               <button
                 onClick={() => {
