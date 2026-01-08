@@ -54,10 +54,12 @@ async function verifyServiceToken(request: any, reply: any) {
 }
 
 // Middleware: Verify gateway token and extract user ID
+// Security: Only trust identity from gateway (verified JWT), never from client
 async function extractUserId(request: any, reply: any) {
   const gatewayToken = request.headers['x-gateway-token'];
   const userId = request.headers['x-user-id'];
 
+  // Verify gateway token - ensures request came from gateway after JWT verification
   if (gatewayToken !== GATEWAY_TOKEN) {
     return reply.code(401).send({
       error: {
@@ -68,7 +70,8 @@ async function extractUserId(request: any, reply: any) {
     });
   }
 
-  if (!userId) {
+  // User ID must come from gateway (from verified JWT), never from client
+  if (!userId || typeof userId !== 'string' || userId.trim() === '') {
     return reply.code(401).send({
       error: {
         code: 'UNAUTHORIZED',
@@ -78,7 +81,8 @@ async function extractUserId(request: any, reply: any) {
     });
   }
 
-  request.userId = userId;
+  // Store userId from verified gateway headers only (trim to normalize)
+  request.userId = userId.trim();
 }
 
 // Bootstrap OpenSearch index
@@ -151,9 +155,6 @@ fastify.get('/search', { preHandler: extractUserId }, async (request, reply) => 
   const limitU = parseInt(String(limitUsers), 10) || 10;
   const limitR = parseInt(String(limitRecipes), 10) || 10;
 
-  // Debug logging for ownerId
-  fastify.log.info({ userId, query, scope: scopeType }, 'Search request received');
-
   if (!query) {
     return reply.send({
       users: scopeType === 'all' || scopeType === 'users' ? [] : undefined,
@@ -174,7 +175,7 @@ fastify.get('/search', { preHandler: extractUserId }, async (request, reply) => 
           query: {
             bool: {
               must: [
-                { term: { type: 'user' } },
+                { term: { 'type.keyword': 'user' } },
                   {
                     multi_match: {
                       query,
@@ -197,7 +198,7 @@ fastify.get('/search', { preHandler: extractUserId }, async (request, reply) => 
       };
       queries.push(
         opensearch.search(userQuery).then((resp: any) => {
-          fastify.log.info({ respKeys: Object.keys(resp || {}), hasHits: !!resp?.hits }, 'User search response structure');
+          // OpenSearch client returns response in resp.body for newer versions
           const hits = resp?.body?.hits || resp?.hits;
           responses.users = (hits?.hits || []).map((hit: any) => ({
             id: hit._source.id,
@@ -214,17 +215,27 @@ fastify.get('/search', { preHandler: extractUserId }, async (request, reply) => 
         }).catch((err: any) => {
           fastify.log.error({ 
             err: err?.message || String(err), 
-            stack: err?.stack,
-            name: err?.name,
-            meta: err?.meta
+            stack: err?.stack
           }, 'User search query failed');
           responses.users = [];
         })
       );
     }
 
-    // Recipes query (filtered by owner)
+    // Recipes query (filtered by owner - access control enforced)
     if (scopeType === 'all' || scopeType === 'recipes') {
+      // Access control: userId comes only from gateway (verified JWT), never from client
+      if (!userId) {
+        fastify.log.warn({ requestId: request.id }, 'Recipe search attempted without userId');
+        return reply.code(403).send({
+          error: {
+            code: 'FORBIDDEN',
+            message: 'Authentication required',
+            request_id: request.id,
+          },
+        });
+      }
+
       const recipeQuery: any = {
         index: OPENSEARCH_INDEX_NAME,
         body: {
@@ -232,14 +243,17 @@ fastify.get('/search', { preHandler: extractUserId }, async (request, reply) => 
           query: {
             bool: {
               must: [
-                { term: { type: 'recipe' } },
-                // Temporarily remove ownerId filter for debugging - will re-enable after confirming values match
-                // { term: { ownerId: userId } }, // Only user's own recipes
+                { term: { 'type.keyword': 'recipe' } },
                 {
                   match: {
                     title: query,
                   },
                 },
+              ],
+              // Access control: Query-time enforcement - ALWAYS filter by ownerId
+              // Use ownerId.keyword because ownerId is a text field with a keyword subfield
+              filter: [
+                { term: { 'ownerId.keyword': userId.trim() } }, // Only user's own recipes - enforced at query time
               ],
             },
           },
@@ -252,17 +266,39 @@ fastify.get('/search', { preHandler: extractUserId }, async (request, reply) => 
       };
       queries.push(
         opensearch.search(recipeQuery).then((resp: any) => {
+          // OpenSearch client returns response in resp.body for newer versions
           const hits = resp?.body?.hits || resp?.hits;
-          // Debug: Log first hit's ownerId to compare with userId
-          if (hits?.hits?.[0]?._source) {
-            fastify.log.info({ 
-              userId, 
-              indexedOwnerId: hits.hits[0]._source.ownerId,
-              match: userId === hits.hits[0]._source.ownerId,
-              hitCount: hits?.total?.value || hits?.total || 0
-            }, 'Recipe search ownerId debug');
+          const rawHits = hits?.hits || [];
+
+          // Defense-in-depth: Server-side verification after receiving results
+          // This should never happen if query filter works correctly, but prevents regressions
+          const validHits = rawHits.filter((hit: any) => {
+            const hitOwnerId = String(hit._source?.ownerId || '').trim();
+            const normalizedUserId = userId.trim();
+            if (hitOwnerId !== normalizedUserId) {
+              fastify.log.warn({ 
+                userId: normalizedUserId,
+                hitOwnerId,
+                hitId: hit._source?.id,
+                hitTitle: hit._source?.title,
+                requestId: request.id
+              }, 'SECURITY: Recipe hit with mismatched ownerId - dropping (should never happen)');
+              return false;
+            }
+            return true;
+          });
+
+          // Log if any hits were dropped (should never happen in production)
+          if (validHits.length < rawHits.length) {
+            fastify.log.warn({ 
+              userId,
+              dropped: rawHits.length - validHits.length,
+              total: rawHits.length,
+              requestId: request.id
+            }, 'SECURITY: Dropped recipe hits due to ownerId mismatch');
           }
-          responses.recipes = (hits?.hits || []).map((hit: any) => ({
+
+          responses.recipes = validHits.map((hit: any) => ({
             id: hit._source.id,
             title: hit._source.title,
             description: hit._source.subtitle,
@@ -274,9 +310,7 @@ fastify.get('/search', { preHandler: extractUserId }, async (request, reply) => 
         }).catch((err: any) => {
           fastify.log.error({ 
             err: err?.message || String(err), 
-            stack: err?.stack,
-            name: err?.name,
-            meta: err?.meta
+            stack: err?.stack
           }, 'Recipe search query failed');
           responses.recipes = [];
         })
@@ -319,9 +353,7 @@ fastify.get('/search', { preHandler: extractUserId }, async (request, reply) => 
   } catch (error: any) {
     fastify.log.error({ 
       error: error?.message || String(error), 
-      stack: error?.stack,
-      name: error?.name,
-      query 
+      stack: error?.stack
     }, 'Search failed');
     return reply.code(500).send({
       error: {
@@ -529,7 +561,8 @@ fastify.post('/internal/reindex/recipes', { preHandler: verifyServiceToken }, as
         title: recipe.title || '',
         subtitle: recipe.description || '',
         content: ingredientsText,
-        ownerId: recipe.owner_id,
+        // Ensure ownerId is stored as a string (trimmed) to match JWT sub claim format
+        ownerId: String(recipe.owner_id || '').trim(),
         thumbnailUrl: recipe.source_type === 'youtube' ? `https://img.youtube.com/vi/${extractVideoId(recipe.source_ref)}/mqdefault.jpg` : undefined,
         updatedAt: recipe.updated_at || recipe.created_at || new Date().toISOString(),
       };
@@ -643,7 +676,8 @@ async function startKafkaConsumer() {
               title: event.title || '',
               subtitle: event.description || '',
               content: ingredientsText,
-              ownerId: event.owner_id,
+              // Ensure ownerId is stored as a string (trimmed) to match JWT sub claim format
+              ownerId: String(event.owner_id || '').trim(),
               thumbnailUrl: event.source_type === 'youtube' && event.source_ref
                 ? `https://img.youtube.com/vi/${extractVideoId(event.source_ref)}/mqdefault.jpg`
                 : undefined,
