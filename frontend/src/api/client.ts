@@ -467,6 +467,63 @@ export const userAPI = {
 
     return response.json();
   },
+
+  async getUserById(userId: string) {
+    const response = await fetchWithAuth(`/users/${userId}`);
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to get user';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
+
+  async followUser(userId: string) {
+    const response = await fetchWithAuth(`/users/${userId}/follow`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to follow user';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
+
+  async unfollowUser(userId: string) {
+    const response = await fetchWithAuth(`/users/${userId}/follow`, {
+      method: 'DELETE',
+      body: JSON.stringify({}),
+    });
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to unfollow user';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
 };
 
 // Cookbook API
@@ -476,6 +533,23 @@ export const cookbookAPI = {
 
     if (!response.ok) {
       let errorMessage = 'Failed to list cookbooks';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
+
+  async listUserCookbooks(userId: string) {
+    const response = await fetchWithAuth(`/cookbooks?owner_id=${encodeURIComponent(userId)}`);
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to list user cookbooks';
       try {
         const error = await response.json();
         errorMessage = error.error?.message || errorMessage;

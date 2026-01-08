@@ -436,8 +436,43 @@ fastify.get('/:recipe_id', { preHandler: extractUserId }, async (request, reply)
 
     const recipe = result.rows[0];
 
-    // Ensure user owns this recipe
+    // Check if user owns this recipe
     if (recipe.owner_id !== userId) {
+      // If user doesn't own the recipe, check if it's in a public cookbook
+      try {
+        const cookbookCheckResponse = await fetch(
+          `${COOKBOOK_SERVICE_URL}/internal/recipes/${recipe_id}/public-check`,
+          {
+            method: 'GET',
+            headers: {
+              'x-service-token': SERVICE_TOKEN,
+            },
+          }
+        );
+
+        if (cookbookCheckResponse.ok) {
+          const checkResult = await cookbookCheckResponse.json();
+          if (checkResult.is_in_public_cookbook) {
+            // Recipe is in a public cookbook, allow access
+            return reply.send({
+              id: recipe.id,
+              title: recipe.title,
+              description: recipe.description,
+              source_type: recipe.source_type,
+              source_ref: recipe.source_ref,
+              ingredients: recipe.ingredients,
+              steps: recipe.steps,
+              created_at: recipe.created_at,
+              updated_at: recipe.updated_at,
+            });
+          }
+        }
+      } catch (error) {
+        fastify.log.warn({ error, recipe_id }, 'Failed to check if recipe is in public cookbook');
+        // Fall through to 403 if check fails
+      }
+
+      // Recipe is not owned by user and not in a public cookbook
       return reply.code(403).send({
         error: {
           code: 'FORBIDDEN',

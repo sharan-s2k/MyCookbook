@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Edit, Globe, Lock, BookOpen } from 'lucide-react';
+import { Edit, Globe, Lock, BookOpen, UserPlus, UserMinus } from 'lucide-react';
 import type { User, Cookbook } from '../../types';
 import { EditProfileModal } from '../modals/EditProfileModal';
 import { FollowersFollowingModal } from '../modals/FollowersFollowingModal';
@@ -10,9 +10,24 @@ interface ProfileProps {
   cookbooks: Cookbook[];
   onViewCookbook: (cookbook: Cookbook) => void;
   onUpdateUser: (updates: { display_name?: string; bio?: string; avatar_url?: string }) => Promise<void>;
+  isOwnProfile?: boolean;
+  isFollowing?: boolean;
+  onFollow?: () => void;
+  followersCount?: number;
+  followingCount?: number;
 }
 
-export function Profile({ user, cookbooks, onViewCookbook, onUpdateUser }: ProfileProps) {
+export function Profile({ 
+  user, 
+  cookbooks, 
+  onViewCookbook, 
+  onUpdateUser,
+  isOwnProfile = true,
+  isFollowing = false,
+  onFollow,
+  followersCount,
+  followingCount,
+}: ProfileProps) {
   const [activeTab, setActiveTab] = useState<'public' | 'private'>('public');
   const [showEditModal, setShowEditModal] = useState(false);
   const [showFollowersModal, setShowFollowersModal] = useState(false);
@@ -21,7 +36,13 @@ export function Profile({ user, cookbooks, onViewCookbook, onUpdateUser }: Profi
   const publicCookbooks = cookbooks.filter(cb => cb.visibility === 'PUBLIC');
   const privateCookbooks = cookbooks.filter(cb => cb.visibility === 'PRIVATE');
 
-  const displayCookbooks = activeTab === 'public' ? publicCookbooks : privateCookbooks;
+  // When viewing other users, only show public cookbooks
+  const displayCookbooks = isOwnProfile 
+    ? (activeTab === 'public' ? publicCookbooks : privateCookbooks)
+    : publicCookbooks;
+
+  const displayFollowersCount = followersCount !== undefined ? followersCount : user.followers;
+  const displayFollowingCount = followingCount !== undefined ? followingCount : user.following;
 
   return (
     <div className="p-4 md:p-8">
@@ -41,13 +62,38 @@ export function Profile({ user, cookbooks, onViewCookbook, onUpdateUser }: Profi
             <div className="flex-1">
               <div className="flex items-center justify-between mb-2">
                 <h1 className="text-gray-900">{user.name}</h1>
-                <button
-                  onClick={() => setShowEditModal(true)}
-                  className="flex items-center gap-2 px-4 py-2 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
-                >
-                  <Edit className="w-4 h-4" />
-                  Edit profile
-                </button>
+                {isOwnProfile ? (
+                  <button
+                    onClick={() => setShowEditModal(true)}
+                    className="flex items-center gap-2 px-4 py-2 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+                  >
+                    <Edit className="w-4 h-4" />
+                    Edit profile
+                  </button>
+                ) : (
+                  onFollow && (
+                    <button
+                      onClick={onFollow}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
+                        isFollowing
+                          ? 'bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-300'
+                          : 'bg-orange-500 hover:bg-orange-600 text-white'
+                      }`}
+                    >
+                      {isFollowing ? (
+                        <>
+                          <UserMinus className="w-4 h-4" />
+                          Unfollow
+                        </>
+                      ) : (
+                        <>
+                          <UserPlus className="w-4 h-4" />
+                          Follow
+                        </>
+                      )}
+                    </button>
+                  )
+                )}
               </div>
               <p className="text-gray-600 mb-4">{user.bio}</p>
               <div className="flex items-center gap-6 text-sm">
@@ -55,14 +101,14 @@ export function Profile({ user, cookbooks, onViewCookbook, onUpdateUser }: Profi
                   onClick={() => setShowFollowersModal(true)}
                   className="px-2 py-1 rounded-lg hover:bg-gray-50 transition-colors cursor-pointer group"
                 >
-                  <span className="text-gray-900 group-hover:text-orange-600 transition-colors font-medium">{user.followers}</span>
+                  <span className="text-gray-900 group-hover:text-orange-600 transition-colors font-medium">{displayFollowersCount}</span>
                   <span className="text-gray-500 ml-1 group-hover:text-orange-500 transition-colors">Followers</span>
                 </button>
                 <button
                   onClick={() => setShowFollowingModal(true)}
                   className="px-2 py-1 rounded-lg hover:bg-gray-50 transition-colors cursor-pointer group"
                 >
-                  <span className="text-gray-900 group-hover:text-orange-600 transition-colors font-medium">{user.following}</span>
+                  <span className="text-gray-900 group-hover:text-orange-600 transition-colors font-medium">{displayFollowingCount}</span>
                   <span className="text-gray-500 ml-1 group-hover:text-orange-500 transition-colors">Following</span>
                 </button>
                 <div className="px-2 py-1">
@@ -74,37 +120,43 @@ export function Profile({ user, cookbooks, onViewCookbook, onUpdateUser }: Profi
           </div>
         </div>
 
-        {/* Tabs */}
-        <div className="flex gap-6 border-b border-gray-200 mb-6">
-          <button
-            onClick={() => setActiveTab('public')}
-            className={`pb-3 px-1 border-b-2 transition-colors flex items-center gap-2 ${
-              activeTab === 'public'
-                ? 'border-orange-500 text-orange-600'
-                : 'border-transparent text-gray-600 hover:text-gray-900'
-            }`}
-          >
-            <Globe className="w-4 h-4" />
-            Public ({publicCookbooks.length})
-          </button>
-          <button
-            onClick={() => setActiveTab('private')}
-            className={`pb-3 px-1 border-b-2 transition-colors flex items-center gap-2 ${
-              activeTab === 'private'
-                ? 'border-orange-500 text-orange-600'
-                : 'border-transparent text-gray-600 hover:text-gray-900'
-            }`}
-          >
-            <Lock className="w-4 h-4" />
-            Private ({privateCookbooks.length})
-          </button>
-        </div>
+        {/* Tabs - Only show for own profile */}
+        {isOwnProfile && (
+          <div className="flex gap-6 border-b border-gray-200 mb-6">
+            <button
+              onClick={() => setActiveTab('public')}
+              className={`pb-3 px-1 border-b-2 transition-colors flex items-center gap-2 ${
+                activeTab === 'public'
+                  ? 'border-orange-500 text-orange-600'
+                  : 'border-transparent text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <Globe className="w-4 h-4" />
+              Public ({publicCookbooks.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('private')}
+              className={`pb-3 px-1 border-b-2 transition-colors flex items-center gap-2 ${
+                activeTab === 'private'
+                  ? 'border-orange-500 text-orange-600'
+                  : 'border-transparent text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <Lock className="w-4 h-4" />
+              Private ({privateCookbooks.length})
+            </button>
+          </div>
+        )}
 
         {/* Cookbook grid */}
         {displayCookbooks.length === 0 ? (
           <div className="text-center py-16">
             <BookOpen className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-            <p className="text-gray-500">No {activeTab} cookbooks yet</p>
+            <p className="text-gray-500">
+              {isOwnProfile 
+                ? `No ${activeTab} cookbooks yet`
+                : 'No public cookbooks yet'}
+            </p>
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6">

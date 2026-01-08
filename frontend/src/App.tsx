@@ -531,8 +531,97 @@ function FeedRoute() {
 
 
 function ProfileRoute() {
+  const { id } = useParams<{ id?: string }>();
   const navigate = useNavigate();
   const { currentUser, cookbooks, setCurrentUser } = useAppContext();
+  const [profileUser, setProfileUser] = useState<User | null>(null);
+  const [profileCookbooks, setProfileCookbooks] = useState<Cookbook[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [isFollowing, setIsFollowing] = useState(false);
+  const [followersCount, setFollowersCount] = useState(0);
+  const [followingCount, setFollowingCount] = useState(0);
+
+  const isOwnProfile = !id || id === currentUser.id;
+  const displayUser = isOwnProfile ? currentUser : (profileUser || currentUser);
+
+  useEffect(() => {
+    const fetchProfile = async () => {
+      if (isOwnProfile) {
+        // Own profile - use current user and own cookbooks
+        const userCookbooks = cookbooks.filter(cb => cb.is_owner && cb.owner_id === currentUser.id);
+        setProfileCookbooks(userCookbooks);
+        setLoading(false);
+        return;
+      }
+
+      // Other user's profile - fetch their data
+      try {
+        setLoading(true);
+        const userData = await userAPI.getUserById(id!);
+
+        // Transform user data
+        const transformedUser: User = {
+          id: userData.id,
+          name: userData.display_name || userData.username || `User ${userData.id.slice(0, 8)}`,
+          avatar: userData.avatar_url || '',
+          bio: userData.bio || '',
+          followers: userData.followers_count || 0,
+          following: userData.following_count || 0,
+          publicRecipes: 0, // Not used for other users
+        };
+        setProfileUser(transformedUser);
+        setFollowersCount(userData.followers_count || 0);
+        setFollowingCount(userData.following_count || 0);
+
+        // Check if current user is following this user
+        setIsFollowing(userData.is_following || false);
+
+        // Get public cookbooks owned by this user
+        // Note: This assumes the backend returns public cookbooks in the user profile
+        // If not, we'll need a separate endpoint like GET /users/:id/cookbooks
+        let publicCookbooks: Cookbook[] = [];
+        if (userData.public_cookbooks && Array.isArray(userData.public_cookbooks)) {
+          publicCookbooks = userData.public_cookbooks.map((cb: any) => ({
+            id: cb.id,
+            title: cb.title,
+            description: cb.description,
+            visibility: cb.visibility,
+            recipe_count: cb.recipe_count || 0,
+            recipeCount: cb.recipe_count || 0,
+            previewImages: [],
+            is_owner: false, // Not the current user's cookbook
+            owner_id: cb.owner_id || id,
+          }));
+        } else {
+          // Fetch public cookbooks for this user
+          try {
+            const cookbooksData = await cookbookAPI.listUserCookbooks(id!);
+            publicCookbooks = (cookbooksData.owned || []).map((cb: any) => ({
+              id: cb.id,
+              title: cb.title,
+              description: cb.description,
+              visibility: cb.visibility,
+              recipe_count: cb.recipe_count || 0,
+              recipeCount: cb.recipe_count || 0,
+              previewImages: [],
+              is_owner: false,
+              owner_id: cb.owner_id,
+            }));
+          } catch (err) {
+            console.warn('Could not fetch cookbooks for user:', err);
+            publicCookbooks = [];
+          }
+        }
+        setProfileCookbooks(publicCookbooks);
+      } catch (error) {
+        console.error('Failed to fetch profile:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchProfile();
+  }, [id, currentUser.id, cookbooks, isOwnProfile]);
 
   const handleViewCookbook = (cookbook: Cookbook) => {
     navigate(`/cookbooks/${cookbook.id}`);
@@ -549,15 +638,52 @@ function ProfileRoute() {
     });
   };
 
-  // Filter cookbooks to only show user's own cookbooks
-  const userCookbooks = cookbooks.filter(cb => cb.is_owner && cb.owner_id === currentUser.id);
+  const handleFollow = async () => {
+    if (!id || isOwnProfile) return;
+    try {
+      if (isFollowing) {
+        await userAPI.unfollowUser(id);
+        setIsFollowing(false);
+        setFollowersCount(prev => Math.max(0, prev - 1));
+        // Update profile user state
+        if (profileUser) {
+          setProfileUser({
+            ...profileUser,
+            followers: Math.max(0, profileUser.followers - 1),
+          });
+        }
+      } else {
+        await userAPI.followUser(id);
+        setIsFollowing(true);
+        setFollowersCount(prev => prev + 1);
+        // Update profile user state
+        if (profileUser) {
+          setProfileUser({
+            ...profileUser,
+            followers: profileUser.followers + 1,
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Failed to toggle follow:', error);
+    }
+  };
+
+  if (loading) {
+    return <div className="p-8">Loading profile...</div>;
+  }
 
   return (
     <Profile
-      user={currentUser}
-      cookbooks={userCookbooks}
+      user={displayUser}
+      cookbooks={profileCookbooks}
       onViewCookbook={handleViewCookbook}
       onUpdateUser={handleUpdateUser}
+      isOwnProfile={isOwnProfile}
+      isFollowing={isFollowing}
+      onFollow={handleFollow}
+      followersCount={followersCount}
+      followingCount={followingCount}
     />
   );
 }

@@ -66,8 +66,62 @@ function isValidUUID(str: string): boolean {
 }
 
 // GET /cookbooks (protected) - List user's cookbooks (owned and saved)
+// Query params: ?owner_id=UUID to get public cookbooks for a specific user
 fastify.get('/', { preHandler: extractUserId }, async (request, reply) => {
   const userId = (request as any).userId;
+  const { owner_id } = request.query as { owner_id?: string };
+
+  // If owner_id is provided, return only public cookbooks for that user
+  if (owner_id && owner_id !== userId) {
+    const client = await pool.connect();
+    try {
+      const result = await client.query(
+        `SELECT 
+          c.id,
+          c.owner_id,
+          c.title,
+          c.description,
+          c.visibility,
+          c.created_at,
+          c.updated_at,
+          COUNT(DISTINCT cr.recipe_id) as recipe_count
+         FROM cookbooks c
+         LEFT JOIN cookbook_recipes cr ON c.id = cr.cookbook_id
+         WHERE c.owner_id = $1 AND c.visibility = 'PUBLIC'
+         GROUP BY c.id
+         ORDER BY c.updated_at DESC`,
+        [owner_id]
+      );
+
+      const publicCookbooks = result.rows.map((row) => ({
+        id: row.id,
+        owner_id: row.owner_id,
+        title: row.title,
+        description: row.description,
+        visibility: row.visibility,
+        recipe_count: parseInt(row.recipe_count, 10),
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        is_owner: false,
+        saved_at: null,
+      }));
+
+      return reply.send({ owned: publicCookbooks, saved: [] });
+    } catch (error) {
+      fastify.log.error({ error }, 'Failed to get public cookbooks');
+      return reply.code(500).send({
+        error: {
+          code: 'INTERNAL_ERROR',
+          message: 'Failed to get public cookbooks',
+          request_id: request.id,
+        },
+      });
+    } finally {
+      client.release();
+    }
+  }
+
+  // Default: return current user's cookbooks (owned and saved)
 
   const client = await pool.connect();
   try {
@@ -762,6 +816,48 @@ fastify.get('/recipes/:recipe_id/cookbooks', { preHandler: extractUserId }, asyn
       error: {
         code: 'INTERNAL_ERROR',
         message: 'Failed to get recipe cookbooks',
+        request_id: request.id,
+      },
+    });
+  } finally {
+    client.release();
+  }
+});
+
+// GET /internal/recipes/:recipe_id/public-check (internal) - Check if recipe is in a public cookbook
+fastify.get('/internal/recipes/:recipe_id/public-check', { preHandler: verifyServiceToken }, async (request, reply) => {
+  const { recipe_id } = request.params as { recipe_id: string };
+
+  if (!isValidUUID(recipe_id)) {
+    return reply.code(400).send({
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid recipe id format',
+        request_id: request.id,
+      },
+    });
+  }
+
+  const client = await pool.connect();
+  try {
+    const result = await client.query(
+      `SELECT COUNT(*) as count
+       FROM cookbook_recipes cr
+       JOIN cookbooks c ON cr.cookbook_id = c.id
+       WHERE cr.recipe_id = $1 AND c.visibility = 'PUBLIC'`,
+      [recipe_id]
+    );
+
+    const count = parseInt(result.rows[0]?.count || '0', 10);
+    return reply.send({
+      is_in_public_cookbook: count > 0,
+    });
+  } catch (error) {
+    fastify.log.error({ error }, 'Failed to check if recipe is in public cookbook');
+    return reply.code(500).send({
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to check if recipe is in public cookbook',
         request_id: request.id,
       },
     });
