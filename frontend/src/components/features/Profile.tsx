@@ -1,22 +1,27 @@
 import React, { useState } from 'react';
-import { Edit, Lock, Globe, ChefHat } from 'lucide-react';
-import type { User, Recipe } from '../../types';
-import { getRecipeThumbnail } from '../../utils/images';
+import { Edit, Globe, Lock, BookOpen } from 'lucide-react';
+import type { User, Cookbook } from '../../types';
+import { EditProfileModal } from '../modals/EditProfileModal';
+import { FollowersFollowingModal } from '../modals/FollowersFollowingModal';
+import { userAPI } from '../../api/client';
 
 interface ProfileProps {
   user: User;
-  recipes: Recipe[];
-  onViewRecipe: (recipe: Recipe) => void;
-  onStartCook: (recipe: Recipe) => void;
+  cookbooks: Cookbook[];
+  onViewCookbook: (cookbook: Cookbook) => void;
+  onUpdateUser: (updates: { display_name?: string; bio?: string; avatar_url?: string }) => Promise<void>;
 }
 
-export function Profile({ user, recipes, onViewRecipe, onStartCook }: ProfileProps) {
+export function Profile({ user, cookbooks, onViewCookbook, onUpdateUser }: ProfileProps) {
   const [activeTab, setActiveTab] = useState<'public' | 'private'>('public');
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [showFollowersModal, setShowFollowersModal] = useState(false);
+  const [showFollowingModal, setShowFollowingModal] = useState(false);
 
-  const publicRecipes = recipes.filter(r => r.isPublic);
-  const privateRecipes = recipes.filter(r => !r.isPublic);
+  const publicCookbooks = cookbooks.filter(cb => cb.visibility === 'PUBLIC');
+  const privateCookbooks = cookbooks.filter(cb => cb.visibility === 'PRIVATE');
 
-  const displayRecipes = activeTab === 'public' ? publicRecipes : privateRecipes;
+  const displayCookbooks = activeTab === 'public' ? publicCookbooks : privateCookbooks;
 
   return (
     <div className="p-4 md:p-8">
@@ -36,31 +41,33 @@ export function Profile({ user, recipes, onViewRecipe, onStartCook }: ProfilePro
             <div className="flex-1">
               <div className="flex items-center justify-between mb-2">
                 <h1 className="text-gray-900">{user.name}</h1>
-                <button className="flex items-center gap-2 px-4 py-2 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
+                <button
+                  onClick={() => setShowEditModal(true)}
+                  className="flex items-center gap-2 px-4 py-2 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+                >
                   <Edit className="w-4 h-4" />
                   Edit profile
                 </button>
               </div>
               <p className="text-gray-600 mb-4">{user.bio}</p>
               <div className="flex items-center gap-6 text-sm">
-                <div>
-                  <span className="text-gray-900">{user.followers}</span>
-                  <span className="text-gray-500 ml-1">Followers</span>
-                </div>
-                <div>
-                  <span className="text-gray-900">{user.following}</span>
-                  <span className="text-gray-500 ml-1">Following</span>
-                </div>
-                <div>
-                  <span className="text-gray-900">{user.publicRecipes}</span>
-                  <span className="text-gray-500 ml-1">Public recipes</span>
-                </div>
-              </div>
-              <div className="mt-4 flex items-center gap-2 text-sm">
-                <span className="text-gray-600">Default privacy:</span>
-                <div className="flex items-center gap-1 text-gray-700">
-                  <Lock className="w-4 h-4" />
-                  <span>Private</span>
+                <button
+                  onClick={() => setShowFollowersModal(true)}
+                  className="px-2 py-1 rounded-lg hover:bg-gray-50 transition-colors cursor-pointer group"
+                >
+                  <span className="text-gray-900 group-hover:text-orange-600 transition-colors font-medium">{user.followers}</span>
+                  <span className="text-gray-500 ml-1 group-hover:text-orange-500 transition-colors">Followers</span>
+                </button>
+                <button
+                  onClick={() => setShowFollowingModal(true)}
+                  className="px-2 py-1 rounded-lg hover:bg-gray-50 transition-colors cursor-pointer group"
+                >
+                  <span className="text-gray-900 group-hover:text-orange-600 transition-colors font-medium">{user.following}</span>
+                  <span className="text-gray-500 ml-1 group-hover:text-orange-500 transition-colors">Following</span>
+                </button>
+                <div className="px-2 py-1">
+                  <span className="text-gray-900 font-medium">{cookbooks.length}</span>
+                  <span className="text-gray-500 ml-1">Cookbooks</span>
                 </div>
               </div>
             </div>
@@ -78,7 +85,7 @@ export function Profile({ user, recipes, onViewRecipe, onStartCook }: ProfilePro
             }`}
           >
             <Globe className="w-4 h-4" />
-            Public ({publicRecipes.length})
+            Public ({publicCookbooks.length})
           </button>
           <button
             onClick={() => setActiveTab('private')}
@@ -89,72 +96,86 @@ export function Profile({ user, recipes, onViewRecipe, onStartCook }: ProfilePro
             }`}
           >
             <Lock className="w-4 h-4" />
-            Private ({privateRecipes.length})
+            Private ({privateCookbooks.length})
           </button>
         </div>
 
-        {/* Recipe grid */}
-        {displayRecipes.length === 0 ? (
+        {/* Cookbook grid */}
+        {displayCookbooks.length === 0 ? (
           <div className="text-center py-16">
-            <ChefHat className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-            <p className="text-gray-500">No {activeTab} recipes yet</p>
+            <BookOpen className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+            <p className="text-gray-500">No {activeTab} cookbooks yet</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {displayRecipes.map((recipe) => (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6">
+            {displayCookbooks.map((cookbook) => (
               <div
-                key={recipe.id}
-                className="bg-white rounded-xl overflow-hidden border border-gray-200 hover:shadow-lg transition-shadow group"
+                key={cookbook.id}
+                className="bg-white rounded-xl overflow-hidden border border-gray-200 hover:shadow-lg transition-shadow group cursor-pointer"
+                onClick={() => onViewCookbook(cookbook)}
               >
-                <div
-                  onClick={() => onViewRecipe(recipe)}
-                  className="cursor-pointer"
-                >
-                  <div className="relative aspect-video">
-                    <img
-                      src={getRecipeThumbnail(recipe.thumbnail, recipe.youtubeUrl || recipe.source_ref)}
-                      alt={recipe.title}
-                      className="w-full h-full object-cover"
-                      onError={(e) => {
-                        const target = e.target as HTMLImageElement;
-                        target.src = '/default_recipe.jpg';
-                      }}
-                    />
-                  </div>
-
-                  <div className="p-4">
-                    <h3 className="text-gray-900 mb-2 line-clamp-2">{recipe.title}</h3>
-                    <div className="flex items-center gap-3 text-sm text-gray-500 mb-4">
-                      <span>{recipe.duration}</span>
-                      <span>•</span>
-                      <span>{recipe.cuisine}</span>
+                {/* Preview grid */}
+                <div className="aspect-square grid grid-cols-2 gap-1 p-1 bg-gray-100">
+                  {cookbook.previewImages.slice(0, 4).map((img, idx) => (
+                    <div key={idx} className="bg-gray-200 rounded overflow-hidden">
+                      {img ? (
+                        <img
+                          src={img}
+                          alt=""
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            const target = e.target as HTMLImageElement;
+                            target.style.display = 'none';
+                          }}
+                        />
+                      ) : (
+                        <div className="w-full h-full bg-gray-300" />
+                      )}
                     </div>
-                  </div>
+                  ))}
+                  {cookbook.previewImages.length === 0 && (
+                    <>
+                      <div className="bg-gray-300" />
+                      <div className="bg-gray-300" />
+                      <div className="bg-gray-300" />
+                      <div className="bg-gray-300" />
+                    </>
+                  )}
                 </div>
 
-                <div className="px-4 pb-4 flex gap-2">
-                  <button
-                    onClick={() => onViewRecipe(recipe)}
-                    className="flex-1 border border-gray-200 hover:bg-gray-50 text-gray-700 px-4 py-2 rounded-lg transition-colors"
-                  >
-                    View
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onStartCook(recipe);
-                    }}
-                    className="flex-1 bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg transition-colors flex items-center justify-center gap-2"
-                  >
-                    <ChefHat className="w-4 h-4" />
-                    Cook
-                  </button>
+                <div className="p-4">
+                  <h3 className="text-gray-900 font-medium mb-1 line-clamp-2">{cookbook.title}</h3>
+                  <p className="text-sm text-gray-500">{cookbook.recipeCount || 0} recipes</p>
                 </div>
               </div>
             ))}
           </div>
         )}
       </div>
+
+      {showEditModal && (
+        <EditProfileModal
+          user={user}
+          onClose={() => setShowEditModal(false)}
+          onSave={onUpdateUser}
+        />
+      )}
+
+      {showFollowersModal && (
+        <FollowersFollowingModal
+          userId={user.id}
+          type="followers"
+          onClose={() => setShowFollowersModal(false)}
+        />
+      )}
+
+      {showFollowingModal && (
+        <FollowersFollowingModal
+          userId={user.id}
+          type="following"
+          onClose={() => setShowFollowingModal(false)}
+        />
+      )}
     </div>
   );
 }

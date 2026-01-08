@@ -58,19 +58,27 @@ export function Sidebar({ collapsed, onToggleCollapse, currentScreen, onNavigate
       <div className="p-4 border-t border-gray-100 space-y-2">
         {!collapsed ? (
           <div className="flex items-center gap-3 px-2 py-2">
-            <img
-              src={currentUser.avatar || '/default_profile.png'}
-              alt={currentUser.name}
-              className="w-10 h-10 rounded-full object-cover"
-              onError={(e) => {
-                const target = e.target as HTMLImageElement;
-                target.src = '/default_profile.png';
-              }}
-            />
-            <div className="flex-1 min-w-0">
-              <div className="text-sm text-gray-900 truncate">{currentUser.name}</div>
-              <div className="text-xs text-gray-500">View profile</div>
-            </div>
+            <button
+              onClick={() => onNavigate('profile')}
+              className="flex-shrink-0"
+            >
+              <img
+                src={currentUser.avatar || '/default_profile.png'}
+                alt={currentUser.name}
+                className="w-10 h-10 rounded-full object-cover"
+                onError={(e) => {
+                  const target = e.target as HTMLImageElement;
+                  target.src = '/default_profile.png';
+                }}
+              />
+            </button>
+            <button
+              onClick={() => onNavigate('profile')}
+              className="flex-1 min-w-0 text-left px-2 py-1 rounded-lg hover:bg-gray-50 transition-colors group"
+            >
+              <div className="text-sm text-gray-900 truncate group-hover:text-orange-600 transition-colors">{currentUser.name}</div>
+              <div className="text-xs text-gray-500 group-hover:text-orange-500 transition-colors">View profile</div>
+            </button>
             <button
               onClick={onLogout}
               className="p-2 hover:bg-gray-100 rounded-lg transition-colors"

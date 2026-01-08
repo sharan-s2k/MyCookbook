@@ -17,6 +17,7 @@ type AppContextType = {
   isAuthenticated: boolean;
   setIsAuthenticated: (value: boolean) => void;
   currentUser: User;
+  setCurrentUser: React.Dispatch<React.SetStateAction<User | null>>;
   recipes: Recipe[];
   setRecipes: React.Dispatch<React.SetStateAction<Recipe[]>>;
   updateRecipeInStore: (updatedRecipe: Partial<Recipe> & { id: string }) => void;
@@ -531,22 +532,32 @@ function FeedRoute() {
 
 function ProfileRoute() {
   const navigate = useNavigate();
-  const { currentUser, recipes } = useAppContext();
+  const { currentUser, cookbooks, setCurrentUser } = useAppContext();
 
-  const handleViewRecipe = (recipe: Recipe) => {
-    navigate(`/recipes/${recipe.id}`);
+  const handleViewCookbook = (cookbook: Cookbook) => {
+    navigate(`/cookbooks/${cookbook.id}`);
   };
 
-  const handleStartCook = (recipe: Recipe) => {
-    navigate(`/recipes/${recipe.id}/cook`);
+  const handleUpdateUser = async (updates: { display_name?: string; bio?: string; avatar_url?: string }) => {
+    await userAPI.updateProfile(updates);
+    // Update current user in context
+    setCurrentUser({
+      ...currentUser,
+      name: updates.display_name || currentUser.name,
+      bio: updates.bio !== undefined ? updates.bio : currentUser.bio,
+      avatar: updates.avatar_url || currentUser.avatar,
+    });
   };
+
+  // Filter cookbooks to only show user's own cookbooks
+  const userCookbooks = cookbooks.filter(cb => cb.is_owner && cb.owner_id === currentUser.id);
 
   return (
     <Profile
       user={currentUser}
-      recipes={recipes.filter(r => r.userId === currentUser.id)}
-      onViewRecipe={handleViewRecipe}
-      onStartCook={handleStartCook}
+      cookbooks={userCookbooks}
+      onViewCookbook={handleViewCookbook}
+      onUpdateUser={handleUpdateUser}
     />
   );
 }
@@ -1106,6 +1117,7 @@ function App() {
     isAuthenticated,
     setIsAuthenticated,
     currentUser,
+    setCurrentUser,
     recipes,
     setRecipes,
     updateRecipeInStore,

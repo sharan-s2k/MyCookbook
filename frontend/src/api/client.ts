@@ -413,6 +413,60 @@ export const userAPI = {
 
     return response.json();
   },
+
+  async updateProfile(updates: { display_name?: string; bio?: string; avatar_url?: string }) {
+    const response = await fetchWithAuth('/users/me', {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    });
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to update profile';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
+
+  async getFollowers(userId: string) {
+    const response = await fetchWithAuth(`/users/${userId}/followers`);
+
+    if (!response.ok) {
+      let errorMessage = 'You have no followers!';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
+
+  async getFollowing(userId: string) {
+    const response = await fetchWithAuth(`/users/${userId}/following`);
+
+    if (!response.ok) {
+      let errorMessage = 'Nobody is following you yet!';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
 };
 
 // Cookbook API
