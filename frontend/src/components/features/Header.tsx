@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Plus, Bell, Search, ChevronDown, BookOpen, Save, LogOut, Menu } from 'lucide-react';
+import { SearchOverlay } from '../modals/SearchOverlay';
 import type { User } from '../../types';
 
 interface HeaderProps {
@@ -23,7 +24,7 @@ const screenTitles: Record<string, string> = {
 
 export function Header({ currentScreen, onOpenCreate, currentUser, onNavigate, onMenuClick }: HeaderProps) {
   const [showProfileMenu, setShowProfileMenu] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [showSearchOverlay, setShowSearchOverlay] = useState(false);
 
   return (
     <header className="bg-white border-b border-gray-200 px-4 md:px-6 py-4">
@@ -49,10 +50,10 @@ export function Header({ currentScreen, onOpenCreate, currentUser, onNavigate, o
               <input
                 type="text"
                 placeholder="Search recipes, users, ingredients..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onFocus={() => onNavigate('search')}
-                className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent text-sm md:text-base"
+                onFocus={() => setShowSearchOverlay(true)}
+                onClick={() => setShowSearchOverlay(true)}
+                readOnly
+                className="w-full pl-10 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent text-sm md:text-base cursor-pointer"
               />
             </div>
           </div>
@@ -136,6 +137,12 @@ export function Header({ currentScreen, onOpenCreate, currentUser, onNavigate, o
           </div>
         )}
       </div>
+
+      {/* Search Overlay */}
+      <SearchOverlay
+        isOpen={showSearchOverlay}
+        onClose={() => setShowSearchOverlay(false)}
+      />
     </header>
   );
 }

@@ -6,7 +6,6 @@ import { Header } from './components/features/Header';
 import { MyRecipes } from './components/features/MyRecipes';
 import { Cookbooks } from './components/features/Cookbooks';
 import { Feed } from './components/features/Feed';
-import { SearchScreen } from './components/features/SearchScreen';
 import { Profile } from './components/features/Profile';
 import { RecipeDetail } from './components/features/RecipeDetail';
 import { CookMode } from './components/features/CookMode';
@@ -61,7 +60,6 @@ function AuthenticatedLayout({ children }: { children: React.ReactNode }) {
     if (screen === 'myrecipes') navigate('/');
     else if (screen === 'cookbooks') navigate('/cookbooks');
     else if (screen === 'feed') navigate('/feed');
-    else if (screen === 'search') navigate('/search');
     else if (screen === 'profile') navigate('/profile');
   };
 
@@ -530,26 +528,6 @@ function FeedRoute() {
   );
 }
 
-function SearchRoute() {
-  const navigate = useNavigate();
-  const { recipes } = useAppContext();
-
-  const handleViewRecipe = (recipe: Recipe) => {
-    navigate(`/recipes/${recipe.id}`);
-  };
-
-  const handleStartCook = (recipe: Recipe) => {
-    navigate(`/recipes/${recipe.id}/cook`);
-  };
-
-  return (
-    <SearchScreen
-      recipes={recipes}
-      onViewRecipe={handleViewRecipe}
-      onStartCook={handleStartCook}
-    />
-  );
-}
 
 function ProfileRoute() {
   const navigate = useNavigate();
@@ -1164,8 +1142,8 @@ function App() {
                   <Route path="/cookbooks" element={<CookbooksRoute />} />
                   <Route path="/cookbooks/:id" element={<CookbookDetailRoute />} />
                   <Route path="/feed" element={<FeedRoute />} />
-                  <Route path="/search" element={<SearchRoute />} />
                   <Route path="/profile" element={<ProfileRoute />} />
+                  <Route path="/profile/:id" element={<ProfileRoute />} />
                   <Route path="/recipes/:id" element={<RecipeDetailRoute />} />
                   <Route path="/recipes/:id/cook" element={<CookModeRoute />} />
                   <Route path="*" element={<Navigate to="/" replace />} />

@@ -13,6 +13,7 @@ const KAFKA_BROKERS = KAFKA_BROKERS_STR.includes(',')
   ? KAFKA_BROKERS_STR.split(',').map(b => b.trim())
   : [KAFKA_BROKERS_STR.trim()];
 const KAFKA_TOPIC_JOBS = process.env.KAFKA_TOPIC_JOBS!;
+const KAFKA_TOPIC_RECIPES = process.env.KAFKA_TOPIC_RECIPES || 'recipe.events';
 const SERVICE_TOKEN = process.env.SERVICE_TOKEN!;
 const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || SERVICE_TOKEN; // Gateway token (same as SERVICE_TOKEN for MVP)
 const COOKBOOK_SERVICE_URL = process.env.COOKBOOK_SERVICE_URL || 'http://cookbook:8006';
@@ -27,6 +28,35 @@ const kafka = new Kafka({
 const producer = kafka.producer({
   createPartitioner: Partitioners.LegacyPartitioner, // Explicitly set to avoid deprecation warning
 });
+
+// Helper: Emit recipe event to Kafka
+async function emitRecipeEvent(event: string, recipe: any) {
+  try {
+    await producer.send({
+      topic: KAFKA_TOPIC_RECIPES,
+      messages: [
+        {
+          key: recipe.id,
+          value: JSON.stringify({
+            event,
+            id: recipe.id,
+            owner_id: recipe.owner_id,
+            title: recipe.title,
+            description: recipe.description,
+            source_type: recipe.source_type,
+            source_ref: recipe.source_ref,
+            ingredients: recipe.ingredients,
+            steps: recipe.steps,
+            created_at: recipe.created_at,
+            updated_at: recipe.updated_at,
+          }),
+        },
+      ],
+    });
+  } catch (error) {
+    fastify.log.warn({ error, event, recipeId: recipe.id }, 'Failed to emit recipe event (non-fatal)');
+  }
+}
 
 const fastify = Fastify({ 
   logger: true,
@@ -610,6 +640,10 @@ fastify.patch('/:recipe_id', { preHandler: extractUserId }, async (request, repl
     const result = await client.query(updateQuery, values);
 
     const recipe = result.rows[0];
+    
+    // Emit recipe.updated event
+    await emitRecipeEvent('recipe.updated', recipe);
+
     return reply.send({
       id: recipe.id,
       title: recipe.title,
@@ -1021,6 +1055,21 @@ fastify.post(
 
       await client.query('COMMIT');
 
+      // Emit recipe.created event
+      const createdRecipe = {
+        id: recipeId,
+        owner_id: owner_id,
+        title,
+        description: description || null,
+        source_type: 'youtube',
+        source_ref,
+        ingredients,
+        steps,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      await emitRecipeEvent('recipe.created', createdRecipe);
+
       return reply.send({
         success: true,
         recipe_id: recipeId,
@@ -1132,9 +1181,10 @@ fastify.delete('/:recipe_id', { preHandler: extractUserId }, async (request, rep
 
   const client = await pool.connect();
   try {
-    // Verify recipe exists and user owns it
+    // Verify recipe exists and user owns it, get full recipe for event
     const checkResult = await client.query(
-      `SELECT owner_id FROM recipes WHERE id = $1`,
+      `SELECT id, owner_id, title, description, source_type, source_ref, ingredients, steps, created_at, updated_at
+       FROM recipes WHERE id = $1`,
       [recipe_id]
     );
 
@@ -1158,8 +1208,14 @@ fastify.delete('/:recipe_id', { preHandler: extractUserId }, async (request, rep
       });
     }
 
+    // Get recipe before deletion for event
+    const recipeForEvent = checkResult.rows[0];
+
     // Delete recipe (CASCADE will handle recipe_raw_source)
     await client.query(`DELETE FROM recipes WHERE id = $1`, [recipe_id]);
+
+    // Emit recipe.deleted event
+    await emitRecipeEvent('recipe.deleted', recipeForEvent);
 
     // Notify cookbook service to cleanup cookbook associations
     try {
@@ -1185,6 +1241,32 @@ fastify.delete('/:recipe_id', { preHandler: extractUserId }, async (request, rep
       error: {
         code: 'INTERNAL_ERROR',
         message: 'Failed to delete recipe',
+        request_id: request.id,
+      },
+    });
+  } finally {
+    client.release();
+  }
+});
+
+// GET /internal/recipes/all (internal) - For reindexing
+fastify.get('/internal/recipes/all', { preHandler: verifyServiceToken }, async (request, reply) => {
+  const client = await pool.connect();
+  try {
+    const result = await client.query(
+      `SELECT id, owner_id, title, description, source_type, source_ref,
+              ingredients, steps, created_at, updated_at
+       FROM recipes
+       ORDER BY created_at DESC`
+    );
+
+    return reply.send(result.rows);
+  } catch (error) {
+    fastify.log.error({ error }, 'Failed to get all recipes');
+    return reply.code(500).send({
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to get all recipes',
         request_id: request.id,
       },
     });

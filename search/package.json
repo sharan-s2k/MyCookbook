@@ -1,25 +1,23 @@
 {
-  "name": "user-service",
+  "name": "search-service",
   "version": "1.0.0",
-  "description": "User profile service for MyCookbook",
+  "description": "Search service for MyCookbook using OpenSearch",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "migrate": "tsx src/migrations/run.ts",
     "test": "jest"
   },
   "dependencies": {
     "fastify": "^4.24.3",
     "@fastify/cors": "^8.4.0",
-    "pg": "^8.11.3",
+    "@opensearch-project/opensearch": "^2.5.0",
     "kafkajs": "^2.2.4",
     "uuid": "^9.0.1"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
-    "@types/pg": "^8.10.9",
     "@types/uuid": "^9.0.7",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"

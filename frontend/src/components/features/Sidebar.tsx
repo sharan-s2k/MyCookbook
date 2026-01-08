@@ -16,7 +16,6 @@ export function Sidebar({ collapsed, onToggleCollapse, currentScreen, onNavigate
     { id: 'myrecipes', icon: Home, label: 'Home' },
     { id: 'cookbooks', icon: BookOpen, label: 'Cookbooks' },
     { id: 'feed', icon: Users, label: 'Feed' },
-    { id: 'search', icon: Search, label: 'Search' },
     { id: 'profile', icon: User, label: 'Profile' },
   ];
 

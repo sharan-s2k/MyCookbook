@@ -11,6 +11,7 @@ const USER_URL = process.env.USER_URL!;
 const RECIPE_URL = process.env.RECIPE_URL!;
 const COOKBOOK_URL = process.env.COOKBOOK_URL!;
 const AI_ORCHESTRATOR_URL = process.env.AI_ORCHESTRATOR_URL!;
+const SEARCH_URL = process.env.SEARCH_URL!;
 const JWT_SECRET = process.env.JWT_PUBLIC_OR_SHARED_SECRET!;
 // SERVICE_TOKEN: Shared secret for service-to-service authentication (x-service-token header)
 const SERVICE_TOKEN = process.env.SERVICE_TOKEN!;
@@ -322,6 +323,33 @@ fastify.register(
             ...cleanHeaders,
             'x-request-id': (originalReq as any).requestId || uuidv4(),
             'x-service-token': SERVICE_TOKEN, // Use SERVICE_TOKEN for service-to-service auth
+          };
+        },
+      },
+    });
+  }
+);
+
+// Search routes (protected)
+fastify.register(
+  async function (fastify) {
+    fastify.addHook('preHandler', verifyJWT);
+    fastify.register(httpProxy, {
+      upstream: SEARCH_URL,
+      prefix: '/api/search',
+      rewritePrefix: '/search',
+      http2: false,
+      replyOptions: {
+        rewriteRequestHeaders: (originalReq, headers) => {
+          const cleanHeaders: any = { ...headers };
+          delete cleanHeaders['x-user-id'];
+          delete cleanHeaders['x-gateway-token'];
+          
+          return {
+            ...cleanHeaders,
+            'x-request-id': (originalReq as any).requestId || uuidv4(),
+            'x-user-id': (originalReq as any).userId,
+            'x-gateway-token': GATEWAY_TOKEN,
           };
         },
       },

@@ -586,3 +586,30 @@ export const cookbookAPI = {
   },
 };
 
+// Search API
+export const searchAPI = {
+  async search(query: string, scope: 'all' | 'users' | 'recipes' = 'all', limitUsers = 10, limitRecipes = 10) {
+    const params = new URLSearchParams({
+      q: query,
+      scope,
+      limitUsers: String(limitUsers),
+      limitRecipes: String(limitRecipes),
+    });
+
+    const response = await fetchWithAuth(`/search?${params.toString()}`);
+
+    if (!response.ok) {
+      let errorMessage = 'Search failed';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
+};
+

@@ -39,6 +39,24 @@ services:
       timeout: 5s
       retries: 5
 
+  opensearch:
+    image: opensearchproject/opensearch:2.11.0
+    environment:
+      - discovery.type=single-node
+      - plugins.security.disabled=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
   # Databases
   auth-db:
     image: postgres:15-alpine
@@ -137,12 +155,16 @@ services:
     depends_on:
       user-db:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
     # Internal service - no public port exposure
     expose:
       - "8002"
     environment:
       PORT: 8002
       DATABASE_URL: postgres://user_user:user_pass@user-db:5432/user_db
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_TOPIC_USERS: user.events
       SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
       GATEWAY_TOKEN: ${GATEWAY_TOKEN:-${SERVICE_TOKEN:-dev-service-token}}
     volumes:
@@ -237,6 +259,32 @@ services:
       - ./workers:/app
       - /app/node_modules
 
+  search:
+    build:
+      context: ./search
+      dockerfile: Dockerfile
+    depends_on:
+      opensearch:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    expose:
+      - "8007"
+    environment:
+      PORT: 8007
+      OPENSEARCH_URL: http://opensearch:9200
+      OPENSEARCH_INDEX_NAME: ${OPENSEARCH_INDEX_NAME:-cookflow_search}
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_TOPIC_USERS: user.events
+      KAFKA_TOPIC_RECIPES: recipe.events
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+      GATEWAY_TOKEN: ${GATEWAY_TOKEN:-${SERVICE_TOKEN:-dev-service-token}}
+      USER_SERVICE_URL: http://user:8002
+      RECIPE_SERVICE_URL: http://recipe:8003
+    volumes:
+      - ./search:/app
+      - /app/node_modules
+
   gateway:
     build:
       context: ./gateway
@@ -252,6 +300,8 @@ services:
         condition: service_started
       ai-orchestrator:
         condition: service_started
+      search:
+        condition: service_started
     ports:
       - "8080:8080"
     environment:
@@ -261,6 +311,7 @@ services:
       RECIPE_URL: http://recipe:8003
       COOKBOOK_URL: http://cookbook:8006
       AI_ORCHESTRATOR_URL: http://ai-orchestrator:8004
+      SEARCH_URL: http://search:8007
       JWT_PUBLIC_OR_SHARED_SECRET: ${JWT_SECRET:-dev-secret-change-in-production}
       SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
       GATEWAY_TOKEN: ${GATEWAY_TOKEN:-${SERVICE_TOKEN:-dev-service-token}}
@@ -276,4 +327,5 @@ volumes:
   user-db-data:
   recipe-db-data:
   cookbook-db-data:
+  opensearch-data:
 
