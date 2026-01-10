@@ -741,3 +741,29 @@ export const searchAPI = {
   },
 };
 
+// Feed API
+export const feedAPI = {
+  async getHomeFeed(cursor?: string | null, limit: number = 20) {
+    const params = new URLSearchParams();
+    if (cursor) {
+      params.append('cursor', cursor);
+    }
+    params.append('limit', String(limit));
+
+    const response = await fetchWithAuth(`/feed/home?${params.toString()}`);
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to fetch feed';
+      try {
+        const error = await response.json();
+        errorMessage = error.error?.message || errorMessage;
+      } catch {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
+  },
+};
+

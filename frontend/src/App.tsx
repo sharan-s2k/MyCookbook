@@ -504,29 +504,8 @@ function CookbookDetailRoute() {
 }
 
 function FeedRoute() {
-  const navigate = useNavigate();
-  const { feedPosts, recipes, setRecipes, currentUser } = useAppContext();
-
-  const handleViewRecipe = (recipe: Recipe) => {
-    navigate(`/recipes/${recipe.id}`);
-  };
-
-  const handleStartCook = (recipe: Recipe) => {
-    navigate(`/recipes/${recipe.id}/cook`);
-  };
-
-  const handleSaveRecipe = (recipe: Recipe) => {
-    setRecipes([...recipes, { ...recipe, userId: currentUser.id, cookbookIds: [] }]);
-  };
-
-  return (
-    <Feed
-      posts={feedPosts}
-      onViewRecipe={handleViewRecipe}
-      onStartCook={handleStartCook}
-      onSaveRecipe={handleSaveRecipe}
-    />
-  );
+  const { currentUser } = useAppContext();
+  return <Feed currentUser={currentUser} />;
 }
 
 

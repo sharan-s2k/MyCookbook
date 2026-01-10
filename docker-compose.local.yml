@@ -285,6 +285,29 @@ services:
       - ./search:/app
       - /app/node_modules
 
+  feed:
+    build:
+      context: ./feed
+      dockerfile: Dockerfile
+    depends_on:
+      user:
+        condition: service_started
+      cookbook:
+        condition: service_started
+    expose:
+      - "8008"
+    environment:
+      PORT: 8008
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+      GATEWAY_TOKEN: ${GATEWAY_TOKEN:-${SERVICE_TOKEN:-dev-service-token}}
+      USER_INTERNAL_URL: http://user:8002
+      COOKBOOK_INTERNAL_URL: http://cookbook:8006
+      HTTP_TIMEOUT_MS: 3000
+      MAX_OWNER_IDS: 500
+    volumes:
+      - ./feed:/app
+      - /app/node_modules
+
   gateway:
     build:
       context: ./gateway
@@ -302,6 +325,8 @@ services:
         condition: service_started
       search:
         condition: service_started
+      feed:
+        condition: service_started
     ports:
       - "8080:8080"
     environment:
@@ -312,6 +337,7 @@ services:
       COOKBOOK_URL: http://cookbook:8006
       AI_ORCHESTRATOR_URL: http://ai-orchestrator:8004
       SEARCH_URL: http://search:8007
+      FEED_URL: http://feed:8008
       JWT_PUBLIC_OR_SHARED_SECRET: ${JWT_SECRET:-dev-secret-change-in-production}
       SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
       GATEWAY_TOKEN: ${GATEWAY_TOKEN:-${SERVICE_TOKEN:-dev-service-token}}

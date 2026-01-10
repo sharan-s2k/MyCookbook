@@ -50,3 +50,20 @@ export type FeedPost = {
   comments: number;
 };
 
+export type FeedCookbookItem = {
+  id: string;
+  owner_id: string;
+  title: string;
+  description: string | null;
+  visibility: 'PRIVATE' | 'PUBLIC';
+  recipe_count: number;
+  created_at: string;
+  updated_at: string;
+  published_at: string;
+};
+
+export type FeedResponse = {
+  items: FeedCookbookItem[];
+  next_cursor: string | null;
+};
+

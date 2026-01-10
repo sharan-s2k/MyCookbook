@@ -903,6 +903,123 @@ fastify.post('/internal/recipes/:recipe_id/delete', { preHandler: verifyServiceT
   }
 });
 
+// GET /internal/cookbooks/public (internal) - Get public cookbooks by owner IDs with pagination
+fastify.get('/internal/cookbooks/public', { preHandler: verifyServiceToken }, async (request, reply) => {
+  const { owner_ids: ownerIdsParam, limit: limitParam, cursor_published_at, cursor_id } = request.query as {
+    owner_ids?: string;
+    limit?: string;
+    cursor_published_at?: string;
+    cursor_id?: string;
+  };
+
+  if (!ownerIdsParam) {
+    return reply.code(400).send({
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'owner_ids is required',
+        request_id: request.id,
+      },
+    });
+  }
+
+  const ownerIds = ownerIdsParam.split(',').filter(id => id.trim().length > 0);
+  
+  // Validate all owner IDs are valid UUIDs
+  for (const id of ownerIds) {
+    if (!isValidUUID(id.trim())) {
+      return reply.code(400).send({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: `Invalid owner_id format: ${id}`,
+          request_id: request.id,
+        },
+      });
+    }
+  }
+
+  if (ownerIds.length === 0) {
+    return reply.send([]);
+  }
+
+  const limit = Math.min(Math.max(parseInt(limitParam || '20', 10), 1), 50);
+
+  const client = await pool.connect();
+  try {
+    let query = `
+      SELECT 
+        c.id,
+        c.owner_id,
+        c.title,
+        c.description,
+        c.visibility,
+        c.created_at,
+        c.updated_at,
+        COUNT(DISTINCT cr.recipe_id) as recipe_count
+      FROM cookbooks c
+      LEFT JOIN cookbook_recipes cr ON c.id = cr.cookbook_id
+      WHERE c.owner_id = ANY($1::uuid[]) 
+        AND c.visibility = 'PUBLIC'
+    `;
+    
+    const params: any[] = [ownerIds];
+    let paramIndex = 2;
+
+    // Add cursor-based pagination (keyset pagination)
+    if (cursor_published_at && cursor_id) {
+      if (!isValidUUID(cursor_id)) {
+        return reply.code(400).send({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Invalid cursor_id format',
+            request_id: request.id,
+          },
+        });
+      }
+      // Sort by updated_at DESC, id DESC (newest first)
+      // Cursor condition: (updated_at < cursor_published_at) OR (updated_at = cursor_published_at AND id < cursor_id)
+      query += ` AND (
+        c.updated_at < $${paramIndex}::timestamptz 
+        OR (c.updated_at = $${paramIndex}::timestamptz AND c.id < $${paramIndex + 1}::uuid)
+      )`;
+      params.push(cursor_published_at, cursor_id);
+      paramIndex += 2;
+    }
+
+    query += `
+      GROUP BY c.id
+      ORDER BY c.updated_at DESC, c.id DESC
+      LIMIT $${paramIndex}
+    `;
+    params.push(limit);
+
+    const result = await client.query(query, params);
+
+    const cookbooks = result.rows.map((row) => ({
+      id: row.id,
+      owner_id: row.owner_id,
+      title: row.title,
+      description: row.description,
+      visibility: row.visibility,
+      recipe_count: parseInt(row.recipe_count, 10),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    }));
+
+    return reply.send(cookbooks);
+  } catch (error) {
+    fastify.log.error({ error, ownerIds }, 'Failed to get public cookbooks');
+    return reply.code(500).send({
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to get public cookbooks',
+        request_id: request.id,
+      },
+    });
+  } finally {
+    client.release();
+  }
+});
+
 // Health check
 fastify.get('/health', async () => {
   try {

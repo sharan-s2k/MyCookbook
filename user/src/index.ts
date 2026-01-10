@@ -80,6 +80,12 @@ async function verifyServiceToken(request: any, reply: any) {
   }
 }
 
+// Helper: Validate UUID format
+function isValidUUID(str: string): boolean {
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  return uuidRegex.test(str);
+}
+
 // Middleware: Verify gateway token and extract user ID
 async function extractUserId(request: any, reply: any) {
   const gatewayToken = request.headers['x-gateway-token'];
@@ -511,6 +517,46 @@ fastify.get('/internal/users/all', { preHandler: verifyServiceToken }, async (re
       error: {
         code: 'INTERNAL_ERROR',
         message: 'Failed to get all users',
+        request_id: request.id,
+      },
+    });
+  } finally {
+    client.release();
+  }
+});
+
+// GET /internal/users/:userId/following-ids (internal) - Get list of following IDs for a user
+fastify.get('/internal/users/:userId/following-ids', { preHandler: verifyServiceToken }, async (request, reply) => {
+  const { userId } = request.params as { userId: string };
+
+  if (!isValidUUID(userId)) {
+    return reply.code(400).send({
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid user ID format',
+        request_id: request.id,
+      },
+    });
+  }
+
+  const client = await pool.connect();
+  try {
+    const result = await client.query(
+      `SELECT following_id
+       FROM user_follows
+       WHERE follower_id = $1
+       ORDER BY created_at DESC`,
+      [userId]
+    );
+
+    const followingIds = result.rows.map((row) => row.following_id);
+    return reply.send(followingIds);
+  } catch (error) {
+    fastify.log.error({ error, userId }, 'Failed to get following IDs');
+    return reply.code(500).send({
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to get following IDs',
         request_id: request.id,
       },
     });
