@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  feed:
+    build: .
+    ports:
+      - "8008:8008"
+    environment:
+      PORT: 8008
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+      GATEWAY_TOKEN: ${GATEWAY_TOKEN:-${SERVICE_TOKEN:-dev-service-token}}
+      USER_INTERNAL_URL: ${USER_INTERNAL_URL:-http://host.docker.internal:8002}
+      COOKBOOK_INTERNAL_URL: ${COOKBOOK_INTERNAL_URL:-http://host.docker.internal:8006}
+      HTTP_TIMEOUT_MS: ${HTTP_TIMEOUT_MS:-3000}
+      MAX_OWNER_IDS: ${MAX_OWNER_IDS:-500}
+    volumes:
+      - .:/app
+      - /app/node_modules
+

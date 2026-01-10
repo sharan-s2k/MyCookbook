@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  opensearch:
+    image: opensearchproject/opensearch:latest
+    environment:
+      - discovery.type=single-node
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=admin123
+      - plugins.security.disabled=true
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  search:
+    build: .
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    ports:
+      - "8007:8007"
+    environment:
+      PORT: 8007
+      OPENSEARCH_URL: http://opensearch:9200
+      OPENSEARCH_INDEX_NAME: cookflow_search
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-localhost:9092}
+      KAFKA_TOPIC_USERS: user.events
+      KAFKA_TOPIC_RECIPES: recipe.events
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+      GATEWAY_TOKEN: ${GATEWAY_TOKEN:-${SERVICE_TOKEN:-dev-service-token}}
+      USER_SERVICE_URL: ${USER_SERVICE_URL:-http://host.docker.internal:8002}
+      RECIPE_SERVICE_URL: ${RECIPE_SERVICE_URL:-http://host.docker.internal:8003}
+      HTTP_TIMEOUT_MS: 5000
+    volumes:
+      - .:/app
+      - /app/node_modules
+
+volumes:
+  opensearch_data:
+
