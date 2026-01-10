@@ -522,12 +522,34 @@ const startHealthServer = async () => {
 };
 
 // Graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('Shutting down...');
-  await consumer.disconnect();
-  await fastify.close();
-  process.exit(0);
-});
+const shutdown = async () => {
+  let forceExitTimer: NodeJS.Timeout | null = null;
+  try {
+    console.log('Shutting down workers service...');
+    // Set forced exit timer (unref so it doesn't keep process alive)
+    forceExitTimer = setTimeout(() => {
+      console.warn('Forcing exit after shutdown timeout');
+      process.exit(1);
+    }, 10000);
+    forceExitTimer.unref();
+    
+    // Close server first, then disconnect consumer
+    await fastify.close();
+    await consumer.disconnect();
+    console.log('Workers service closed');
+    
+    // Clear timer if shutdown completed successfully
+    if (forceExitTimer) clearTimeout(forceExitTimer);
+    process.exit(0);
+  } catch (err) {
+    console.error('Error during shutdown:', err);
+    if (forceExitTimer) clearTimeout(forceExitTimer);
+    process.exit(1);
+  }
+};
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 
 // Start services
 (async () => {

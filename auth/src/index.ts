@@ -15,13 +15,43 @@ const REFRESH_TOKEN_TTL_DAYS = parseInt(process.env.REFRESH_TOKEN_TTL_DAYS || '3
 const USER_SERVICE_INTERNAL_URL = process.env.USER_SERVICE_INTERNAL_URL!;
 const SERVICE_TOKEN = process.env.SERVICE_TOKEN!;
 const BCRYPT_COST = parseInt(process.env.BCRYPT_COST || '12', 10);
+const DB_POOL_MAX = parseInt(process.env.DB_POOL_MAX || '10', 10);
 
-const pool = new Pool({ connectionString: DATABASE_URL });
+const pool = new Pool({ 
+  connectionString: DATABASE_URL,
+  max: DB_POOL_MAX, // Maximum number of clients in the pool
+  idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
+  connectionTimeoutMillis: 2000, // Return an error after 2 seconds if connection could not be established
+});
 
 const fastify = Fastify({ logger: true });
 
+// HTTP timeout configuration (configurable)
+const HTTP_TIMEOUT_MS = parseInt(process.env.HTTP_TIMEOUT_MS || '3000', 10);
+
+// Helper: Fetch with timeout
+async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs: number = HTTP_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    return response;
+  } catch (error: any) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      throw new Error(`Request timeout after ${timeoutMs}ms`);
+    }
+    throw error;
+  }
+}
+
 fastify.register(cors, {
-  origin: process.env.FRONTEND_ORIGIN || true,
+  origin: process.env.FRONTEND_ORIGIN || 'http://localhost:3000', // Use specific origin, not wildcard
   credentials: true,
 });
 
@@ -51,7 +81,7 @@ function generateTokens(userId: string) {
 // Helper: Create user profile in user service
 async function createUserProfile(userId: string, email: string) {
   try {
-    const response = await fetch(`${USER_SERVICE_INTERNAL_URL}/internal/users`, {
+    const response = await fetchWithTimeout(`${USER_SERVICE_INTERNAL_URL}/internal/users`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -375,6 +405,36 @@ const start = async () => {
     process.exit(1);
   }
 };
+
+// Graceful shutdown
+const shutdown = async () => {
+  let forceExitTimer: NodeJS.Timeout | null = null;
+  try {
+    fastify.log.info('Shutting down auth service...');
+    // Set forced exit timer (unref so it doesn't keep process alive)
+    forceExitTimer = setTimeout(() => {
+      fastify.log.warn('Forcing exit after shutdown timeout');
+      process.exit(1);
+    }, 10000);
+    forceExitTimer.unref();
+    
+    // Close server first (stops accepting new requests), then close DB pool
+    await fastify.close();
+    await pool.end();
+    fastify.log.info('Auth service closed');
+    
+    // Clear timer if shutdown completed successfully
+    if (forceExitTimer) clearTimeout(forceExitTimer);
+    process.exit(0);
+  } catch (err) {
+    fastify.log.error({ err }, 'Error during shutdown');
+    if (forceExitTimer) clearTimeout(forceExitTimer);
+    process.exit(1);
+  }
+};
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 
 start();
 

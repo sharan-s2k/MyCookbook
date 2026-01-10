@@ -11,6 +11,9 @@ CREATE TABLE IF NOT EXISTS cookbooks (
 
 CREATE INDEX IF NOT EXISTS idx_cookbooks_owner_id ON cookbooks(owner_id);
 CREATE INDEX IF NOT EXISTS idx_cookbooks_visibility ON cookbooks(visibility);
+-- Composite index for feed query: filters by owner_id (ANY array), visibility='PUBLIC', orders by updated_at DESC, id DESC
+-- This index optimizes the feed query: WHERE owner_id = ANY(...) AND visibility = 'PUBLIC' ORDER BY updated_at DESC, id DESC
+CREATE INDEX IF NOT EXISTS idx_cookbooks_public_owner_updated_at_id ON cookbooks(owner_id, updated_at DESC, id DESC) WHERE visibility = 'PUBLIC';
 
 -- Create cookbook_recipes junction table (many-to-many)
 CREATE TABLE IF NOT EXISTS cookbook_recipes (

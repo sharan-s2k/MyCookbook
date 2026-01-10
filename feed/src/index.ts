@@ -238,4 +238,32 @@ const start = async () => {
   }
 };
 
+// Graceful shutdown
+const shutdown = async () => {
+  let forceExitTimer: NodeJS.Timeout | null = null;
+  try {
+    fastify.log.info('Shutting down feed service...');
+    // Set forced exit timer (unref so it doesn't keep process alive)
+    forceExitTimer = setTimeout(() => {
+      fastify.log.warn('Forcing exit after shutdown timeout');
+      process.exit(1);
+    }, 10000);
+    forceExitTimer.unref();
+    
+    await fastify.close();
+    fastify.log.info('Feed service closed');
+    
+    // Clear timer if shutdown completed successfully
+    if (forceExitTimer) clearTimeout(forceExitTimer);
+    process.exit(0);
+  } catch (err) {
+    fastify.log.error({ err }, 'Error during shutdown');
+    if (forceExitTimer) clearTimeout(forceExitTimer);
+    process.exit(1);
+  }
+};
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+
 start();

@@ -8,8 +8,14 @@ const DATABASE_URL = process.env.DATABASE_URL!;
 const SERVICE_TOKEN = process.env.SERVICE_TOKEN!;
 const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || SERVICE_TOKEN;
 const RECIPE_SERVICE_URL = process.env.RECIPE_SERVICE_URL || 'http://recipe:8003';
+const DB_POOL_MAX = parseInt(process.env.DB_POOL_MAX || '10', 10);
 
-const pool = new Pool({ connectionString: DATABASE_URL });
+const pool = new Pool({ 
+  connectionString: DATABASE_URL,
+  max: DB_POOL_MAX,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
+});
 
 const fastify = Fastify({ logger: true });
 
@@ -1043,8 +1049,29 @@ const start = async () => {
 
 // Graceful shutdown
 const shutdown = async () => {
-  await pool.end();
-  await fastify.close();
+  let forceExitTimer: NodeJS.Timeout | null = null;
+  try {
+    fastify.log.info('Shutting down cookbook service...');
+    // Set forced exit timer (unref so it doesn't keep process alive)
+    forceExitTimer = setTimeout(() => {
+      fastify.log.warn('Forcing exit after shutdown timeout');
+      process.exit(1);
+    }, 10000);
+    forceExitTimer.unref();
+    
+    // Close server first, then close DB pool
+    await fastify.close();
+    await pool.end();
+    fastify.log.info('Cookbook service closed');
+    
+    // Clear timer if shutdown completed successfully
+    if (forceExitTimer) clearTimeout(forceExitTimer);
+    process.exit(0);
+  } catch (err) {
+    fastify.log.error({ err }, 'Error during shutdown');
+    if (forceExitTimer) clearTimeout(forceExitTimer);
+    process.exit(1);
+  }
 };
 
 process.on('SIGTERM', shutdown);

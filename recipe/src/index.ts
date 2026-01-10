@@ -17,8 +17,38 @@ const KAFKA_TOPIC_RECIPES = process.env.KAFKA_TOPIC_RECIPES || 'recipe.events';
 const SERVICE_TOKEN = process.env.SERVICE_TOKEN!;
 const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || SERVICE_TOKEN; // Gateway token (same as SERVICE_TOKEN for MVP)
 const COOKBOOK_SERVICE_URL = process.env.COOKBOOK_SERVICE_URL || 'http://cookbook:8006';
+const DB_POOL_MAX = parseInt(process.env.DB_POOL_MAX || '10', 10);
 
-const pool = new Pool({ connectionString: DATABASE_URL });
+const pool = new Pool({ 
+  connectionString: DATABASE_URL,
+  max: DB_POOL_MAX,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
+});
+
+// HTTP timeout configuration (configurable)
+const HTTP_TIMEOUT_MS = parseInt(process.env.HTTP_TIMEOUT_MS || '3000', 10);
+
+// Helper: Fetch with timeout
+async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs: number = HTTP_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    return response;
+  } catch (error: any) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      throw new Error(`Request timeout after ${timeoutMs}ms`);
+    }
+    throw error;
+  }
+}
 
 const kafka = new Kafka({
   brokers: KAFKA_BROKERS,
@@ -440,7 +470,7 @@ fastify.get('/:recipe_id', { preHandler: extractUserId }, async (request, reply)
     if (recipe.owner_id !== userId) {
       // If user doesn't own the recipe, check if it's in a public cookbook
       try {
-        const cookbookCheckResponse = await fetch(
+        const cookbookCheckResponse = await fetchWithTimeout(
           `${COOKBOOK_SERVICE_URL}/internal/recipes/${recipe_id}/public-check`,
           {
             method: 'GET',
@@ -1254,7 +1284,7 @@ fastify.delete('/:recipe_id', { preHandler: extractUserId }, async (request, rep
 
     // Notify cookbook service to cleanup cookbook associations
     try {
-      const response = await fetch(`${COOKBOOK_SERVICE_URL}/internal/recipes/${recipe_id}/delete`, {
+      const response = await fetchWithTimeout(`${COOKBOOK_SERVICE_URL}/internal/recipes/${recipe_id}/delete`, {
         method: 'POST',
         headers: {
           'x-service-token': SERVICE_TOKEN,
@@ -1337,9 +1367,30 @@ const start = async () => {
 
 // Graceful shutdown
 const shutdown = async () => {
-  await producer.disconnect();
-  await pool.end();
-  await fastify.close();
+  let forceExitTimer: NodeJS.Timeout | null = null;
+  try {
+    fastify.log.info('Shutting down recipe service...');
+    // Set forced exit timer (unref so it doesn't keep process alive)
+    forceExitTimer = setTimeout(() => {
+      fastify.log.warn('Forcing exit after shutdown timeout');
+      process.exit(1);
+    }, 10000);
+    forceExitTimer.unref();
+    
+    // Close server first, then disconnect producer, then close DB pool
+    await fastify.close();
+    await producer.disconnect();
+    await pool.end();
+    fastify.log.info('Recipe service closed');
+    
+    // Clear timer if shutdown completed successfully
+    if (forceExitTimer) clearTimeout(forceExitTimer);
+    process.exit(0);
+  } catch (err) {
+    fastify.log.error({ err }, 'Error during shutdown');
+    if (forceExitTimer) clearTimeout(forceExitTimer);
+    process.exit(1);
+  }
 };
 
 process.on('SIGTERM', shutdown);

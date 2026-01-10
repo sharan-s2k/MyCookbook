@@ -34,6 +34,30 @@ const kafka = new Kafka({
 
 const fastify = Fastify({ logger: true });
 
+// HTTP timeout configuration (configurable)
+const HTTP_TIMEOUT_MS = parseInt(process.env.HTTP_TIMEOUT_MS || '5000', 10); // Longer timeout for reindexing
+
+// Helper: Fetch with timeout
+async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs: number = HTTP_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    return response;
+  } catch (error: any) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      throw new Error(`Request timeout after ${timeoutMs}ms`);
+    }
+    throw error;
+  }
+}
+
 fastify.register(cors, {
   origin: true,
   credentials: true,
@@ -460,7 +484,7 @@ fastify.post('/internal/index/delete', { preHandler: verifyServiceToken }, async
 fastify.post('/internal/reindex/users', { preHandler: verifyServiceToken }, async (request, reply) => {
   try {
     // Fetch all users from user service
-    const response = await fetch(`${USER_SERVICE_URL}/internal/users/all`, {
+    const response = await fetchWithTimeout(`${USER_SERVICE_URL}/internal/users/all`, {
       headers: {
         'x-service-token': SERVICE_TOKEN,
         'x-request-id': (request as any).requestId || uuidv4(),
@@ -531,7 +555,7 @@ fastify.post('/internal/reindex/users', { preHandler: verifyServiceToken }, asyn
 fastify.post('/internal/reindex/recipes', { preHandler: verifyServiceToken }, async (request, reply) => {
   try {
     // Fetch all recipes from recipe service
-    const response = await fetch(`${RECIPE_SERVICE_URL}/internal/recipes/all`, {
+    const response = await fetchWithTimeout(`${RECIPE_SERVICE_URL}/internal/recipes/all`, {
       headers: {
         'x-service-token': SERVICE_TOKEN,
         'x-request-id': (request as any).requestId || uuidv4(),
@@ -616,19 +640,21 @@ function extractVideoId(url: string): string | null {
   return null;
 }
 
-// Kafka consumer for indexing
-async function startKafkaConsumer() {
-  const consumer = kafka.consumer({ groupId: 'search-service-indexer' });
+// Kafka consumer for indexing (stored globally for shutdown)
+let kafkaConsumer: ReturnType<typeof kafka.consumer> | null = null;
 
-  await consumer.connect();
+async function startKafkaConsumer() {
+  kafkaConsumer = kafka.consumer({ groupId: 'search-service-indexer' });
+
+  await kafkaConsumer.connect();
   fastify.log.info('Kafka consumer connected');
 
-  await consumer.subscribe({
+  await kafkaConsumer.subscribe({
     topics: [KAFKA_TOPIC_USERS, KAFKA_TOPIC_RECIPES],
     fromBeginning: false,
   });
 
-  await consumer.run({
+  await kafkaConsumer.run({
     eachMessage: async ({ topic, message }) => {
       try {
         if (!message.value) return;
@@ -739,9 +765,31 @@ const start = async () => {
 
 // Graceful shutdown
 const shutdown = async () => {
-  const consumer = kafka.consumer({ groupId: 'search-service-indexer' });
-  await consumer.disconnect();
-  await fastify.close();
+  let forceExitTimer: NodeJS.Timeout | null = null;
+  try {
+    fastify.log.info('Shutting down search service...');
+    // Set forced exit timer (unref so it doesn't keep process alive)
+    forceExitTimer = setTimeout(() => {
+      fastify.log.warn('Forcing exit after shutdown timeout');
+      process.exit(1);
+    }, 10000);
+    forceExitTimer.unref();
+    
+    // Close server first, then disconnect consumer
+    await fastify.close();
+    if (kafkaConsumer) {
+      await kafkaConsumer.disconnect();
+    }
+    fastify.log.info('Search service closed');
+    
+    // Clear timer if shutdown completed successfully
+    if (forceExitTimer) clearTimeout(forceExitTimer);
+    process.exit(0);
+  } catch (err) {
+    fastify.log.error({ err }, 'Error during shutdown');
+    if (forceExitTimer) clearTimeout(forceExitTimer);
+    process.exit(1);
+  }
 };
 
 process.on('SIGTERM', shutdown);
