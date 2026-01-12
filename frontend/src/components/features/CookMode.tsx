@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, Play, Pause, SkipBack, SkipForward, Mic, MicOff, ChevronUp, ChevronDown, Plus, Minus, Clock, CheckSquare, Square } from 'lucide-react';
 import type { Recipe } from '../../types';
 import { aiAPI } from '../../api/client';
+import { useHandsFreeSpeech } from '../../hooks/useHandsFreeSpeech';
 
 interface CookModeProps {
   recipe: Recipe;
@@ -32,6 +33,9 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
   ]);
   const [youtubePlayer, setYoutubePlayer] = useState<any>(null);
   const playerContainerRef = React.useRef<HTMLDivElement>(null);
+  const [chatInput, setChatInput] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+  const lastSpokenMessageIndexRef = useRef<number>(-1);
 
   const currentStep = recipe.steps[currentStepIndex];
 
@@ -252,6 +256,13 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
       /^step \d+$/,
       /^next step$/,
       /^previous step$/,
+      /^play$/,
+      /^play video$/,
+      /^resume$/,
+      /^resume video$/,
+      /^pause$/,
+      /^pause video$/,
+      /^stop video$/,
     ];
     
     for (const pattern of navPatterns) {
@@ -303,9 +314,133 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
       }
       return;
     }
+
+    // Handle play/pause commands
+    if (normalized === 'play' || normalized === 'play video' || normalized === 'resume' || normalized === 'resume video') {
+      if (youtubePlayer && youtubePlayer.playVideo) {
+        try {
+          youtubePlayer.playVideo();
+          console.debug('playVideo command: called playVideo()');
+          // Check state after a short delay to verify success
+          setTimeout(() => {
+            try {
+              const state = youtubePlayer.getPlayerState?.();
+              console.debug('playVideo command: state after play:', state);
+              if (state === 1) { // PLAYING
+                setIsPlaying(true);
+                setAiMessages(prev => [...prev, { type: 'assistant', text: 'Playing video' }]);
+              } else {
+                console.debug('playVideo command: failed to play, state:', state);
+                setIsPlaying(false);
+                setAiMessages(prev => [...prev, { type: 'assistant', text: 'Unable to start video. Tap play or say play again.' }]);
+              }
+            } catch (e) {
+              console.error('Error checking play state:', e);
+              setAiMessages(prev => [...prev, { type: 'assistant', text: 'Unable to start video. Tap play or say play again.' }]);
+            }
+          }, 300);
+        } catch (error) {
+          console.error('Error playing video:', error);
+          setAiMessages(prev => [...prev, { type: 'assistant', text: 'Unable to start video. Tap play or say play again.' }]);
+        }
+      } else {
+        setAiMessages(prev => [...prev, { type: 'assistant', text: 'No video available' }]);
+      }
+      return;
+    }
+
+    if (normalized === 'pause' || normalized === 'pause video' || normalized === 'stop video') {
+      if (youtubePlayer && youtubePlayer.pauseVideo) {
+        try {
+          youtubePlayer.pauseVideo();
+          const state = youtubePlayer.getPlayerState?.();
+          if (state === 2) { // PAUSED
+            setIsPlaying(false);
+            setAiMessages(prev => [...prev, { type: 'assistant', text: 'Paused video' }]);
+          } else {
+            console.debug('pauseVideo command: failed to pause, state:', state);
+            setIsPlaying(false);
+            setAiMessages(prev => [...prev, { type: 'assistant', text: 'Paused video' }]);
+          }
+        } catch (error) {
+          console.error('Error pausing video:', error);
+          setAiMessages(prev => [...prev, { type: 'assistant', text: 'Unable to pause video' }]);
+        }
+      } else {
+        setAiMessages(prev => [...prev, { type: 'assistant', text: 'No video available' }]);
+      }
+      return;
+    }
+  };
+
+  // Video control helpers
+  const pauseVideo = (): boolean => {
+    if (youtubePlayer && youtubePlayer.pauseVideo) {
+      try {
+        youtubePlayer.pauseVideo();
+        // Verify pause success
+        const state = youtubePlayer.getPlayerState?.();
+        if (state === 2) { // PAUSED
+          setIsPlaying(false);
+          console.debug('pauseVideo: success');
+          return true;
+        } else {
+          console.debug('pauseVideo: failed to pause, state:', state);
+          setIsPlaying(false); // Update state anyway
+          return false;
+        }
+      } catch (error) {
+        console.error('Error pausing video:', error);
+        return false;
+      }
+    }
+    return false;
+  };
+
+  const resumeVideo = (): boolean => {
+    if (youtubePlayer && youtubePlayer.playVideo) {
+      try {
+        youtubePlayer.playVideo();
+        // Verify play success with a short delay to allow state to update
+        setTimeout(() => {
+          const state = youtubePlayer.getPlayerState?.();
+          if (state === 1) { // PLAYING
+            setIsPlaying(true);
+            console.debug('resumeVideo: success');
+          } else {
+            console.debug('resumeVideo: failed to play, state:', state);
+            setIsPlaying(false);
+          }
+        }, 100);
+        return true; // Optimistically return true
+      } catch (error) {
+        console.error('Error resuming video:', error);
+        return false;
+      }
+    }
+    return false;
+  };
+
+  const isVideoPlaying = (): boolean => {
+    // Prefer getPlayerState() over isPlaying state
+    if (youtubePlayer && youtubePlayer.getPlayerState) {
+      try {
+        const state = youtubePlayer.getPlayerState();
+        return state === 1; // PLAYING
+      } catch (error) {
+        console.error('Error getting player state:', error);
+        // Fall back to isPlaying state
+        return isPlaying;
+      }
+    }
+    // Fall back to isPlaying state if API unavailable
+    return isPlaying;
   };
 
   const handleVoiceCommand = async (command: string) => {
+    // Clear input after sending
+    setChatInput('');
+    
     setAiMessages(prev => [...prev, { type: 'user', text: command }]);
     
     const classification = classifyMessage(command);
@@ -337,6 +472,79 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
       }
     }
   };
+
+  // Hands-free speech recognition hook
+  const {
+    supported: speechSupported,
+    listening,
+    error: speechError,
+    startRecognition,
+    stopRecognition,
+    pauseRecognition,
+    resumeRecognition,
+  } = useHandsFreeSpeech({
+    enabled: voiceEnabled,
+    silenceMs: 2500,
+    onTextUpdate: (text) => {
+      setChatInput(text);
+    },
+    onAutoSend: (text) => {
+      if (text.trim()) {
+        handleVoiceCommand(text.trim());
+      }
+    },
+    onDisable: () => {
+      setVoiceEnabled(false);
+    },
+    pauseVideo,
+    resumeVideo,
+    isVideoPlaying,
+    enableTTS: true,
+  });
+
+  // TTS for assistant messages
+  useEffect(() => {
+    if (!voiceEnabled || aiMessages.length === 0) return;
+
+    const lastIndex = aiMessages.length - 1;
+    const lastMessage = aiMessages[lastIndex];
+    
+    // Only speak new assistant messages (not the initial welcome message or previously spoken ones)
+    if (lastMessage.type === 'assistant' && lastIndex > lastSpokenMessageIndexRef.current) {
+      lastSpokenMessageIndexRef.current = lastIndex;
+      
+      // Skip the initial welcome message
+      if (lastIndex === 0) return;
+
+      // Pause recognition while speaking
+      pauseRecognition();
+
+      const utterance = new SpeechSynthesisUtterance(lastMessage.text);
+      utterance.lang = 'en-US';
+      utterance.rate = 1.0;
+      utterance.pitch = 1.0;
+      utterance.volume = 1.0;
+
+      utterance.onend = () => {
+        // Resume recognition after speaking ends (if still enabled)
+        if (voiceEnabled) {
+          resumeRecognition();
+        }
+      };
+
+      utterance.onerror = (error) => {
+        console.error('TTS error:', error);
+        // Resume recognition even on error
+        if (voiceEnabled) {
+          resumeRecognition();
+        }
+      };
+
+      // Cancel any ongoing speech
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+    }
+  }, [aiMessages, voiceEnabled, pauseRecognition, resumeRecognition]);
 
   // Timer countdown effect
   useEffect(() => {
@@ -420,17 +628,45 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
           </div>
         </div>
         
-        <button
-          onClick={() => setVoiceEnabled(!voiceEnabled)}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
-            voiceEnabled
-              ? 'bg-orange-500 text-white'
-              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-          }`}
-        >
-          {voiceEnabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
-          <span>Hands-free</span>
-        </button>
+        <div className="flex items-center gap-2">
+          {listening && (
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-orange-500/20 border border-orange-500 rounded-lg">
+              <div className="w-2 h-2 bg-orange-500 rounded-full animate-pulse"></div>
+              <span className="text-orange-400 text-sm">Listening...</span>
+            </div>
+          )}
+          {speechError && (
+            <div className="px-3 py-1.5 bg-red-500/20 border border-red-500 rounded-lg">
+              <span className="text-red-400 text-sm">{speechError}</span>
+            </div>
+          )}
+          <button
+            onClick={() => {
+              if (!speechSupported) return;
+              
+              if (voiceEnabled) {
+                // Turning OFF: stop recognition directly from gesture
+                stopRecognition();
+                setVoiceEnabled(false);
+              } else {
+                // Turning ON: start recognition directly from gesture
+                setVoiceEnabled(true);
+                // Call startRecognition directly from click handler (user gesture required)
+                startRecognition();
+              }
+            }}
+            disabled={!speechSupported}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
+              voiceEnabled
+                ? 'bg-orange-500 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            } ${!speechSupported ? 'opacity-50 cursor-not-allowed' : ''}`}
+            title={!speechSupported ? 'Voice not supported in this browser' : ''}
+          >
+            {voiceEnabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
+            <span>Hands-free</span>
+          </button>
+        </div>
       </div>
 
       {/* Main content */}
@@ -493,32 +729,45 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
             <div className="p-4 border-t border-gray-700">
               <div className="flex flex-wrap gap-2 mb-3">
                 <button
-                  onClick={() => handleVoiceCommand('go to step 3')}
+                  onClick={() => {
+                    setChatInput('go to step 3');
+                    handleVoiceCommand('go to step 3');
+                  }}
                   className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg text-sm transition-colors"
                 >
                   Go to step 3
                 </button>
                 <button
-                  onClick={() => handleVoiceCommand('next step')}
+                  onClick={() => {
+                    setChatInput('next step');
+                    handleVoiceCommand('next step');
+                  }}
                   className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg text-sm transition-colors"
                 >
                   Next step
                 </button>
                 <button
-                  onClick={() => handleVoiceCommand('What can I substitute for yogurt?')}
+                  onClick={() => {
+                    setChatInput('What can I substitute for yogurt?');
+                    handleVoiceCommand('What can I substitute for yogurt?');
+                  }}
                   className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg text-sm transition-colors"
                 >
                   Substitution help
                 </button>
               </div>
               <input
+                ref={inputRef}
                 type="text"
+                value={chatInput}
+                onChange={(e) => {
+                  setChatInput(e.target.value);
+                }}
                 placeholder="Type a question or command (e.g., 'go to step 3', 'next step', 'What can I substitute for yogurt?')"
                 className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-orange-500"
                 onKeyPress={(e) => {
-                  if (e.key === 'Enter' && e.currentTarget.value.trim()) {
-                    handleVoiceCommand(e.currentTarget.value.trim());
-                    e.currentTarget.value = '';
+                  if (e.key === 'Enter' && chatInput.trim()) {
+                    handleVoiceCommand(chatInput.trim());
                   }
                 }}
               />

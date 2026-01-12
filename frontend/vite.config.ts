@@ -22,5 +22,19 @@ export default defineConfig({
     watch: {
       usePolling: false,
     },
+    // ✅ Allow access when the site is opened via your ngrok URL
+    // {
+    allowedHosts: [
+      'somatic-joleen-perorative.ngrok-free.dev',
+    ],
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+        secure: false,
+      },
+    },
+    // }
+    // frontend/.env.local is made only for ngrok
   },
 })
