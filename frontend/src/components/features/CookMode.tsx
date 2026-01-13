@@ -20,7 +20,7 @@ interface Timer {
 export function CookMode({ recipe, onExit }: CookModeProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
-  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [pttEnabled, setPttEnabled] = useState(false);
   const [servingMultiplier, setServingMultiplier] = useState(1);
   const [isEditingMultiplier, setIsEditingMultiplier] = useState(false);
   const [multiplierInput, setMultiplierInput] = useState('1');
@@ -36,8 +36,68 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
   const [chatInput, setChatInput] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const lastSpokenMessageIndexRef = useRef<number>(-1);
+  const isSpaceDownRef = useRef<boolean>(false);
+  const lastTranscriptRef = useRef<string>('');
+  const sendCommandRef = useRef<(text: string) => void>(() => {});
+  const pendingSendRef = useRef<boolean>(false);
+  const lastKeyDownTimeRef = useRef<number>(0);
 
   const currentStep = recipe.steps[currentStepIndex];
+
+  // Basic cleanup: lowercase, trim, remove punctuation, collapse spaces
+  const basicCleanup = (text: string): string => {
+    let cleaned = text.toLowerCase().trim();
+    cleaned = cleaned.replace(/[^\w\s]/g, '');
+    cleaned = cleaned.replace(/\s+/g, ' ');
+    return cleaned;
+  };
+
+  // Normalize step number words ONLY (for pure navigation commands)
+  const normalizeStepWordCommand = (text: string): string => {
+    let normalized = text;
+    
+    // Number word to digit mapping
+    const numberWords: { [key: string]: string } = {
+      'zero': '0', 'one': '1', 'two': '2', 'three': '3', 'four': '4',
+      'five': '5', 'six': '6', 'seven': '7', 'eight': '8', 'nine': '9', 'ten': '10'
+    };
+    
+    // Handle "step [number word]" patterns
+    for (const [word, digit] of Object.entries(numberWords)) {
+      // "step one" => "step 1"
+      normalized = normalized.replace(new RegExp(`\\bstep ${word}\\b`, 'gi'), `step ${digit}`);
+      // "go to step one" => "go to step 1"
+      normalized = normalized.replace(new RegExp(`\\bgo to step ${word}\\b`, 'gi'), `go to step ${digit}`);
+    }
+    
+    // Handle homophones after "step": to/too => 2, for => 4
+    normalized = normalized.replace(/\bstep (to|too)\b/gi, 'step 2');
+    normalized = normalized.replace(/\bstep for\b/gi, 'step 4');
+    normalized = normalized.replace(/\bgo to step (to|too)\b/gi, 'go to step 2');
+    normalized = normalized.replace(/\bgo to step for\b/gi, 'go to step 4');
+    
+    return normalized;
+  };
+
+  // Check if text is a pure navigation command
+  const isPureNavCommand = (text: string): boolean => {
+    const normalized = text.toLowerCase().trim();
+    const navPatterns = [
+      /^step \d+$/,
+      /^go to step \d+$/,
+      /^next step$/,
+      /^previous step$/,
+      /^play$/,
+      /^play video$/,
+      /^resume$/,
+      /^resume video$/,
+      /^pause$/,
+      /^pause video$/,
+      /^stop video$/,
+    ];
+    
+    return navPatterns.some(pattern => pattern.test(normalized));
+  };
 
   // Extract video ID from YouTube URL
   const getVideoId = (url?: string): string | null => {
@@ -473,7 +533,14 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
     }
   };
 
-  // Hands-free speech recognition hook
+  // Update sendCommandRef when handleVoiceCommand changes
+  useEffect(() => {
+    sendCommandRef.current = (text: string) => {
+      handleVoiceCommand(text);
+    };
+  }, [handleVoiceCommand]);
+
+  // Push-to-talk speech recognition hook
   const {
     supported: speechSupported,
     listening,
@@ -483,18 +550,72 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
     pauseRecognition,
     resumeRecognition,
   } = useHandsFreeSpeech({
-    enabled: voiceEnabled,
+    enabled: pttEnabled,
     silenceMs: 2500,
+    autoSend: false, // Disable auto-send; we'll send on keyup
     onTextUpdate: (text) => {
       setChatInput(text);
+      lastTranscriptRef.current = text; // Store latest transcript
     },
-    onAutoSend: (text) => {
-      if (text.trim()) {
-        handleVoiceCommand(text.trim());
+    onAutoSend: () => {
+      // No-op since we handle sending on keyup
+    },
+    onStop: () => {
+      // Called when recognition fully ends - send transcript if pending
+      // This is triggered when spacebar is released, after recognition stops
+      console.debug('onStop: called, pendingSend:', pendingSendRef.current);
+      if (!pendingSendRef.current) {
+        console.debug('onStop: pendingSend is false, returning');
+        return;
       }
+      pendingSendRef.current = false;
+      
+      // Capture transcript at the moment recognition ends
+      // lastTranscriptRef.current contains the latest transcript (same as what's visible in the input box)
+      // because onTextUpdate updates both chatInput state and lastTranscriptRef
+      const raw = lastTranscriptRef.current.trim();
+      console.debug('onStop: raw transcript:', raw);
+      if (!raw) {
+        console.debug('onStop: empty transcript, clearing and returning');
+        lastTranscriptRef.current = '';
+        setChatInput('');
+        return;
+      }
+      
+      // Basic cleanup
+      const cleaned = basicCleanup(raw);
+      console.debug('onStop: cleaned transcript:', cleaned);
+      
+      // Check for cancel keyword (anywhere in cleaned text)
+      if (/\bcancel\b/i.test(cleaned)) {
+        console.debug('onStop: cancel detected, clearing and returning');
+        setChatInput('');
+        lastTranscriptRef.current = '';
+        return;
+      }
+      
+      // Check if already a pure nav command
+      if (isPureNavCommand(cleaned)) {
+        console.debug('onStop: pure nav command detected, sending:', cleaned);
+        setChatInput('');
+        sendCommandRef.current(cleaned);
+        lastTranscriptRef.current = '';
+        return;
+      }
+      
+      // Try normalizing step words
+      const mapped = normalizeStepWordCommand(cleaned);
+      
+      // If mapped is now a pure nav command, send mapped; otherwise send original cleaned
+      const toSend = isPureNavCommand(mapped) ? mapped : cleaned;
+      console.debug('onStop: sending command:', toSend);
+      
+      setChatInput('');
+      sendCommandRef.current(toSend);
+      lastTranscriptRef.current = '';
     },
     onDisable: () => {
-      setVoiceEnabled(false);
+      setPttEnabled(false);
     },
     pauseVideo,
     resumeVideo,
@@ -504,7 +625,7 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
 
   // TTS for assistant messages
   useEffect(() => {
-    if (!voiceEnabled || aiMessages.length === 0) return;
+    if (!pttEnabled || aiMessages.length === 0) return;
 
     const lastIndex = aiMessages.length - 1;
     const lastMessage = aiMessages[lastIndex];
@@ -516,9 +637,7 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
       // Skip the initial welcome message
       if (lastIndex === 0) return;
 
-      // Pause recognition while speaking
-      pauseRecognition();
-
+      // Note: In PTT mode, we don't pause recognition because recognition only runs when spacebar is held
       const utterance = new SpeechSynthesisUtterance(lastMessage.text);
       utterance.lang = 'en-US';
       utterance.rate = 1.0;
@@ -526,25 +645,126 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
       utterance.volume = 1.0;
 
       utterance.onend = () => {
-        // Resume recognition after speaking ends (if still enabled)
-        if (voiceEnabled) {
-          resumeRecognition();
-        }
+        // No resume needed in PTT mode
       };
 
       utterance.onerror = (error) => {
         console.error('TTS error:', error);
-        // Resume recognition even on error
-        if (voiceEnabled) {
-          resumeRecognition();
-        }
       };
 
       // Cancel any ongoing speech
       window.speechSynthesis.cancel();
       window.speechSynthesis.speak(utterance);
     }
-  }, [aiMessages, voiceEnabled, pauseRecognition, resumeRecognition]);
+  }, [aiMessages, pttEnabled]);
+
+  // Spacebar key handlers for push-to-talk
+  useEffect(() => {
+    if (!pttEnabled) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+      
+      // Ignore key repeats
+      if (e.repeat) return;
+
+      // Ignore if target is an input, textarea, or contentEditable
+      const target = e.target as HTMLElement;
+      if (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.isContentEditable
+      ) {
+        return;
+      }
+
+      // Ignore if already down (shouldn't happen with repeat check, but double-check)
+      if (isSpaceDownRef.current) {
+        console.debug('handleKeyDown: space already down, ignoring');
+        return;
+      }
+
+      console.debug('handleKeyDown: space pressed');
+      isSpaceDownRef.current = true;
+      lastKeyDownTimeRef.current = Date.now();
+      
+      // Don't preventDefault on keydown - only prevent it on keyup
+      // This prevents issues where preventDefault on keydown causes keyup to fire immediately
+      e.stopPropagation();
+
+      // Cancel any TTS currently speaking
+      window.speechSynthesis.cancel();
+
+      // Clear chat input and reset transcript
+      setChatInput('');
+      lastTranscriptRef.current = '';
+      pendingSendRef.current = false;
+
+      // Start recognition (user gesture)
+      startRecognition();
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+
+      console.debug('handleKeyUp: space keyup event received', {
+        isSpaceDown: isSpaceDownRef.current,
+        timeSinceKeyDown: lastKeyDownTimeRef.current > 0 ? Date.now() - lastKeyDownTimeRef.current : 'never'
+      });
+
+      // Ignore if target is an input, textarea, or contentEditable
+      const target = e.target as HTMLElement;
+      if (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.isContentEditable
+      ) {
+        console.debug('handleKeyUp: ignoring, target is input/textarea');
+        return;
+      }
+
+      // Ignore keyup if it fires too quickly after keydown (< 100ms)
+      // This handles cases where keyup fires immediately after keydown on some systems
+      // Check this FIRST before checking isSpaceDownRef, because keyup might fire before keydown completes
+      if (lastKeyDownTimeRef.current > 0) {
+        const timeSinceKeyDown = Date.now() - lastKeyDownTimeRef.current;
+        if (timeSinceKeyDown < 100) {
+          console.debug(`handleKeyUp: keyup fired too quickly (${timeSinceKeyDown}ms), ignoring`);
+          return;
+        }
+      }
+
+      // Only handle keyup if space was actually down
+      if (!isSpaceDownRef.current) {
+        console.debug('handleKeyUp: space not down, ignoring');
+        return;
+      }
+
+      console.debug('handleKeyUp: space released - stopping recognition');
+      isSpaceDownRef.current = false;
+      e.preventDefault();
+      e.stopPropagation();
+
+      // Set pending send BEFORE stopping recognition (to catch onStop callback)
+      pendingSendRef.current = true;
+      stopRecognition();
+    };
+
+    // Use capture phase to handle events early, before they can cause side effects
+    window.addEventListener('keydown', handleKeyDown, true);
+    window.addEventListener('keyup', handleKeyUp, true);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, true);
+      window.removeEventListener('keyup', handleKeyUp, true);
+      // Clean up: stop recognition and clear refs on unmount
+      if (isSpaceDownRef.current || pendingSendRef.current) {
+        isSpaceDownRef.current = false;
+        pendingSendRef.current = false;
+        stopRecognition();
+      }
+    };
+  }, [pttEnabled]); // Don't include startRecognition/stopRecognition - they're stable useCallback refs
 
   // Timer countdown effect
   useEffect(() => {
@@ -629,7 +849,7 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
         </div>
         
         <div className="flex items-center gap-2">
-          {listening && (
+          {pttEnabled && isSpaceDownRef.current && listening && (
             <div className="flex items-center gap-2 px-3 py-1.5 bg-orange-500/20 border border-orange-500 rounded-lg">
               <div className="w-2 h-2 bg-orange-500 rounded-full animate-pulse"></div>
               <span className="text-orange-400 text-sm">Listening...</span>
@@ -643,28 +863,18 @@ export function CookMode({ recipe, onExit }: CookModeProps) {
           <button
             onClick={() => {
               if (!speechSupported) return;
-              
-              if (voiceEnabled) {
-                // Turning OFF: stop recognition directly from gesture
-                stopRecognition();
-                setVoiceEnabled(false);
-              } else {
-                // Turning ON: start recognition directly from gesture
-                setVoiceEnabled(true);
-                // Call startRecognition directly from click handler (user gesture required)
-                startRecognition();
-              }
+              setPttEnabled(!pttEnabled);
             }}
             disabled={!speechSupported}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
-              voiceEnabled
+              pttEnabled
                 ? 'bg-orange-500 text-white'
                 : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
             } ${!speechSupported ? 'opacity-50 cursor-not-allowed' : ''}`}
             title={!speechSupported ? 'Voice not supported in this browser' : ''}
           >
-            {voiceEnabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
-            <span>Hands-free</span>
+            {pttEnabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
+            <span>Push to talk</span>
           </button>
         </div>
       </div>

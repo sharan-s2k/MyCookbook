@@ -3,8 +3,10 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 interface UseHandsFreeSpeechOptions {
   enabled: boolean;
   silenceMs?: number; // default 2500
+  autoSend?: boolean; // default true
   onTextUpdate: (text: string) => void;
   onAutoSend: (text: string) => void;
+  onStop?: () => void; // called when recognition ends
   onDisable: () => void;
   pauseVideo?: () => void;
   resumeVideo?: () => void;
@@ -26,8 +28,10 @@ interface UseHandsFreeSpeechReturn {
 export function useHandsFreeSpeech({
   enabled,
   silenceMs = 2500,
+  autoSend = true,
   onTextUpdate,
   onAutoSend,
+  onStop,
   onDisable,
   pauseVideo,
   resumeVideo,
@@ -39,11 +43,13 @@ export function useHandsFreeSpeech({
   const [error, setError] = useState<string | undefined>();
   const recognitionRef = useRef<any>(null);
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const stopTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const wasPlayingRef = useRef<boolean>(false);
   const isPausedRef = useRef<boolean>(false);
   const currentTranscriptRef = useRef<string>('');
   const isListeningRef = useRef<boolean>(false);
   const handlersAttachedRef = useRef<boolean>(false);
+  const stateRef = useRef<'idle' | 'starting' | 'listening' | 'stopping'>('idle');
 
   // Check if SpeechRecognition is supported
   const supported = typeof window !== 'undefined' && (
@@ -62,6 +68,14 @@ export function useHandsFreeSpeech({
     if (silenceTimerRef.current) {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
+    }
+  };
+
+  // Clear stop timeout
+  const clearStopTimeout = () => {
+    if (stopTimeoutRef.current) {
+      clearTimeout(stopTimeoutRef.current);
+      stopTimeoutRef.current = null;
     }
   };
 
@@ -137,7 +151,21 @@ export function useHandsFreeSpeech({
     }
 
     recognition.onstart = () => {
-      console.debug('Recognition onstart fired');
+      console.debug('Recognition onstart fired, current state:', stateRef.current);
+      
+      // If we're in 'stopping' state, ignore onstart (stop was called before start completed)
+      if (stateRef.current === 'stopping') {
+        console.debug('onstart: ignoring, state is stopping');
+        return;
+      }
+      
+      // Only transition to listening if we're in 'starting' state
+      if (stateRef.current !== 'starting') {
+        console.debug('onstart: unexpected state, ignoring:', stateRef.current);
+        return;
+      }
+      
+      stateRef.current = 'listening';
       setListening(true);
       isListeningRef.current = true;
       setError(undefined);
@@ -159,19 +187,23 @@ export function useHandsFreeSpeech({
       
       if (event.error === 'aborted') {
         // Ignore aborted - it's expected when stopping/pausing
+        // Don't reset state here - let onend handle it so onStop callback is called
         console.debug('ignored aborted');
-        // Do not surface as error or change listening state
         return;
       }
       
       if (event.error === 'not-allowed' || event.error === 'permission-denied' || event.error === 'service-not-allowed') {
         setError('Microphone blocked');
+        stateRef.current = 'idle';
         setListening(false);
         isListeningRef.current = false;
         onDisable();
       } else if (event.error === 'no-speech') {
-        // This is normal, just continue listening
+        // This is normal, just continue listening (state stays 'listening')
       } else {
+        // Other errors - reset state to idle
+        console.debug('Recognition error, resetting state:', event.error);
+        stateRef.current = 'idle';
         setError(`Recognition error: ${event.error}`);
         setListening(false);
         isListeningRef.current = false;
@@ -200,14 +232,34 @@ export function useHandsFreeSpeech({
     };
 
     recognition.onend = () => {
-      console.debug('Recognition onend fired');
-      setListening(false);
-      isListeningRef.current = false;
+      console.debug('Recognition onend fired, current state:', stateRef.current);
+      
+      // Clear the fallback timeout since onend fired
+      clearStopTimeout();
+      
+      // Transition to idle and call onStop if we're not already idle
+      // onend fires after abort() or stop(), so we should always transition to idle
+      if (stateRef.current !== 'idle') {
+        stateRef.current = 'idle';
+        setListening(false);
+        isListeningRef.current = false;
+        // Call onStop callback if provided (for PTT mode)
+        if (onStop) {
+          console.debug('onend: calling onStop callback');
+          onStop();
+        }
+      } else {
+        console.debug('onend: already idle, still calling onStop if provided');
+        // Even if already idle, still call onStop (might have been reset by error handler)
+        if (onStop) {
+          onStop();
+        }
+      }
       // Do not auto-restart - user must explicitly start via gesture
     };
 
     handlersAttachedRef.current = true;
-  }, [isVideoPlaying, pauseVideo, onTextUpdate, resetSilenceTimer, onDisable]);
+  }, [isVideoPlaying, pauseVideo, onTextUpdate, resetSilenceTimer, onDisable, onStop]);
 
   // Start recognition (must be called from user gesture)
   const startRecognition = useCallback(() => {
@@ -217,9 +269,9 @@ export function useHandsFreeSpeech({
       return;
     }
 
-    // Guard against double-start
-    if (isListeningRef.current) {
-      console.debug('startRecognition: already listening, ignoring');
+    // Guard against double-start using state machine - only start if idle
+    if (stateRef.current !== 'idle') {
+      console.debug('startRecognition: not idle, state:', stateRef.current);
       return;
     }
 
@@ -235,48 +287,99 @@ export function useHandsFreeSpeech({
     // Attach handlers if not already attached
     attachHandlers(recognition);
     
+    stateRef.current = 'starting';
     try {
       recognition.start();
-      // listening state will be set by onstart event
+      // listening state will be set by onstart event (state -> 'listening')
+      // If start fails, onstart won't fire, so we handle it in catch
     } catch (e: any) {
       console.debug('startRecognition error:', e);
-      if (e.message && e.message.includes('already started')) {
-        // Recognition is already running
-        console.debug('Recognition already started');
-        isListeningRef.current = true;
-        setListening(true);
-      } else {
-        setError('Failed to start voice recognition');
-        setListening(false);
-        isListeningRef.current = false;
+      
+      // If recognition is already started, stop it first to clean up
+      if (e.name === 'InvalidStateError' || (e.message && e.message.includes('already started'))) {
+        console.debug('startRecognition: recognition already started, stopping first');
+        try {
+          recognition.stop();
+        } catch (stopError) {
+          // Ignore stop errors
+        }
       }
+      
+      // Reset state on error
+      stateRef.current = 'idle';
+      setError('Failed to start voice recognition');
+      setListening(false);
+      isListeningRef.current = false;
     }
   }, [supported, ensureRecognition, attachHandlers]);
 
   // Stop recognition
   const stopRecognition = useCallback(() => {
-    // Guard: if not listening, return
-    if (!isListeningRef.current) {
-      console.debug('stopRecognition: not listening, ignoring');
+    // Guard: if already idle, return (nothing to stop)
+    if (stateRef.current === 'idle') {
+      console.debug('stopRecognition: already idle');
       return;
     }
 
-    console.debug('stopRecognition called');
+    // Guard: if already stopping, return (avoid duplicate stops)
+    if (stateRef.current === 'stopping') {
+      console.debug('stopRecognition: already stopping');
+      return;
+    }
+
+    console.debug('stopRecognition called, state:', stateRef.current);
+    
+    // Clear any existing stop timeout
+    clearStopTimeout();
+    
+    // Can stop from 'starting' or 'listening' state
+    stateRef.current = 'stopping';
     
     if (recognitionRef.current) {
       try {
-        recognitionRef.current.stop();
-        setListening(false);
-        isListeningRef.current = false;
+        // Use abort() for immediate stop (more reliable than stop() for PTT)
+        // abort() immediately stops recognition and fires onend
+        if (recognitionRef.current.abort) {
+          recognitionRef.current.abort();
+        } else {
+          recognitionRef.current.stop();
+        }
         clearSilenceTimer();
+        
+        // Fallback: if onend doesn't fire within 200ms, manually trigger onStop
+        // This ensures transcript is sent even if onend is delayed or doesn't fire
+        stopTimeoutRef.current = setTimeout(() => {
+          console.debug('stopRecognition: onend timeout, manually triggering onStop');
+          if (stateRef.current === 'stopping') {
+            stateRef.current = 'idle';
+            setListening(false);
+            isListeningRef.current = false;
+            if (onStop) {
+              onStop();
+            }
+          }
+          clearStopTimeout();
+        }, 200);
       } catch (e) {
         console.error('Error stopping recognition:', e);
-        // Even if stop fails, update state
+        // Even if stop/abort fails, reset state immediately and call onStop
+        clearStopTimeout();
+        stateRef.current = 'idle';
         setListening(false);
         isListeningRef.current = false;
+        // Call onStop immediately if it exists (fallback if onend doesn't fire)
+        if (onStop) {
+          onStop();
+        }
       }
+    } else {
+      // No recognition instance, reset state immediately
+      clearStopTimeout();
+      stateRef.current = 'idle';
+      setListening(false);
+      isListeningRef.current = false;
     }
-  }, []);
+  }, [onStop]);
 
   // Pause recognition (used during TTS)
   const pauseRecognition = useCallback(() => {
@@ -323,15 +426,22 @@ export function useHandsFreeSpeech({
 
   // Clean up when disabled (only stop if actually listening)
   useEffect(() => {
-    if (!enabled && isListeningRef.current && recognitionRef.current) {
+    if (!enabled && stateRef.current !== 'idle' && recognitionRef.current) {
       try {
-        recognitionRef.current.stop();
+        // Try abort first (more forceful than stop)
+        if (recognitionRef.current.abort) {
+          recognitionRef.current.abort();
+        } else {
+          recognitionRef.current.stop();
+        }
       } catch (e) {
         // Ignore errors (aborted is expected)
       }
+      stateRef.current = 'idle';
       setListening(false);
       isListeningRef.current = false;
       clearSilenceTimer();
+      clearStopTimeout();
     }
   }, [enabled]);
 
